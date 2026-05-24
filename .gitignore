@@ -1,0 +1,25 @@
+# Worktrees (created at runtime, never commit)
+.worktrees/
+
+# Local progress (active operation state, never commit)
+_progress.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+secrets/
+*.env
+.env.local
