@@ -113,6 +113,36 @@ Keep it short — `_progress.md` has the full state.
 - **Don't talk to sessions** — you can't; they're separate processes. Communication is via the user pasting summaries.
 - **Don't poll** — sessions report when done; trust the model.
 
+## Context economy (important for long operations)
+
+You will be the longest-running session in this operation. Without discipline, your context fills with summaries faster than necessary. Follow these rules:
+
+1. **Read `_progress.md` once at startup**, then use the `Edit` tool's diff-only mechanism for every subsequent update. Do NOT re-Read the file before each update — your "remembered state" of the file from the harness is current.
+2. **Acknowledge completion summaries in ≤2 sentences** — status reflected + one cross-cutting observation if any. Don't restate what the user just pasted.
+3. **Don't re-Read files** unless: (a) operation startup, (b) returning after multi-hour break, (c) user explicitly asks for current state, (d) debugging an `Edit` failure.
+4. **Don't run spot-checks** (`grep`, `git log`, `ls`) unless the user asks. The user can read `_progress.md` themselves if they want full state.
+5. **Batch acknowledgments** when 3-4 summaries arrive in succession — one combined response is leaner than four.
+
+The user will paste **short structured summaries** (per the session-side instruction below); do NOT expect or require them to paste long prose. If they do paste long prose anyway, extract the short structured fields from it (ID, status, commit, PR) and process those — don't quote the rest back.
+
+## Session summary format (what you'll receive)
+
+Sessions are instructed to emit two sections on completion. The user reads the detailed section themselves and pastes only the short section to you:
+
+```
+plan {ID} → {done|cancelled|blocked}
+commit: {hash} (pushed: {yes|no})
+PR: #{N} or "none"
+key: <30-chars take-away>
+out-of-scope: <0-2 lines, only if cross-cutting>
+```
+
+Process this with one `Edit` call to `_progress.md`, then acknowledge in ≤2 sentences.
+
+## Cross-cutting findings
+
+When you notice a pattern across multiple sessions (e.g. "three sessions hit the same lock"), record it in a dedicated message to the user, not inline with a summary acknowledgment. Brevity in acknowledgments + clarity in dedicated cross-cutting notes = best of both.
+
 ## When to stop
 
 The operation is done when `_progress.md` shows zero rows in `draft`, `ready`, or `in_progress`. Everything is `done`, `cancelled`, or `blocked` (with clear external dependency).

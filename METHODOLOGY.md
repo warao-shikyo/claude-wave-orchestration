@@ -278,3 +278,89 @@ These are typically separate operations from "clearing the backlog." Don't confl
 - For "implicit done" verdicts, a session may use 1/10th the tokens of a full implementation session — these are very cheap
 
 In our case, the 5-day operation closed ~120 plans. The token cost was significant but well below the value delivered.
+
+## 12. Context economy (orchestrator side)
+
+The orchestrator session runs the longest of any session — typically days. Without discipline, its context window fills with summaries, file reads, and acknowledgments faster than you'd expect.
+
+### What inflates the orchestrator's context
+
+- **Re-reading `_progress.md`** for each update (~10 KB per Read)
+- **Verbose completion summaries** pasted by the user (~3-5 KB each, ~500 KB for 120 plans)
+- **Long acknowledgments** by the orchestrator (~500 chars-1 KB each)
+- **Grep / Glob / Bash output** when checking branch state
+
+### What keeps it lean
+
+| Tactic | How much it saves (per summary cycle) |
+|---|---|
+| Use `Edit` (diff-only) instead of `Read + Write` for `_progress.md` | ~10 KB |
+| Short structured summaries from sessions instead of prose | ~3 KB |
+| Acknowledge in ≤2 sentences | ~500 chars |
+| Avoid spot-checks (`grep`, `git log`) unless the user asks | ~200-500 chars |
+| Use Claude Code's prompt cache (default; no action needed) | API cost only, not context |
+
+### Specific instructions for the orchestrator
+
+These should be in your bootstrap prompt (see [`templates/orchestrator-bootstrap-prompt.md`](templates/orchestrator-bootstrap-prompt.md)):
+
+1. **Read `_progress.md` once at startup**, then use `Edit` for every subsequent update
+2. **Acknowledge completion summaries in ≤2 sentences**: status updated + 1 cross-cutting observation if any
+3. **Don't re-Read files** unless the session's last edit was 30+ minutes ago (assume your "remembered state" is current)
+4. **Don't grep/glob unless asked** — the user can see `_progress.md` too if they need full state
+5. **Batch acknowledgments** when 3-4 summaries arrive in succession — one combined response is leaner than four
+
+### Specific instructions for sessions
+
+These should be in your starter prompt template (see [`templates/starter-prompt-template.md`](templates/starter-prompt-template.md)):
+
+Emit **two sections** on completion — one for the user, one for the orchestrator:
+
+```
+=== Detailed summary (for the user) ===
+[Rich prose: what changed, why, what was discovered, residual issues, anything cross-cutting.
+The user reads this for situational awareness. Don't restrain length.]
+
+=== Short summary (paste this to the orchestrator) ===
+plan {ID} → {done|cancelled|blocked}
+commit: {hash} (pushed: {yes|no})
+PR: #{N} or "none"
+key: <30-chars take-away>
+out-of-scope: <0-2 lines, only if cross-cutting>
+```
+
+The short section is ~200 chars typical. **Detailed prose stays in the user-facing section + plan MD execution log + commit messages**, not in what the orchestrator processes.
+
+### Specific instructions for the human (user)
+
+The user is the bridge between sessions and the orchestrator. To keep the orchestrator lean:
+
+1. **Read the detailed summary yourself** — that's where situational awareness lives. The orchestrator never sees it; no context cost.
+2. **Paste only the short summary** to the orchestrator. The orchestrator updates `_progress.md` from that.
+3. **If you want the orchestrator to track a cross-cutting issue**, mention it explicitly in your next message — don't expect the orchestrator to dig it out of long prose.
+4. **Don't ask the orchestrator to recap what happened** unless necessary. Read `_progress.md` yourself if you need full state.
+5. **Do ask the orchestrator high-leverage questions**: "what's next?", "should I worry about X across sessions?", "is this plan ready for a Wave?" — these are where the orchestrator's accumulated context pays off.
+
+This is **collaborative discipline**: the user reads, the orchestrator tracks, the two context pools stay separate.
+
+### Why this matters at scale
+
+For a 500-plan operation:
+
+| Discipline | Cumulative orchestrator context |
+|---|---|
+| No discipline (re-Read + verbose summaries) | ~7.5 MB before compaction |
+| Verbose summaries + Edit only | ~2.5 MB |
+| Short summaries + Edit only | ~250 KB |
+| Short summaries + Edit + batch acks | ~150 KB |
+
+The difference between "no discipline" and "full discipline" is ~50x. A long operation that **never hits compaction** stays fast, coherent, and cheap. One that compacts repeatedly loses fidelity in the orchestrator's mental model — you'll feel it as "wait, what was plan 412 about again?"
+
+### When the orchestrator *should* read full files
+
+- **Operation startup**: read `_progress.md` once to load state
+- **After a multi-hour break**: re-read to refresh
+- **When the user asks "what's the current state?"**: a fresh read avoids stale snapshots
+- **When debugging an Edit failure**: re-read to find the exact `old_string`
+
+In normal Wave cycle operation: never.

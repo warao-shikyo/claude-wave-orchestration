@@ -173,10 +173,113 @@ In practice we still drifted. Discipline is hard. Acknowledge it and move on if 
 
 We didn't try it because the operation only ran 5 days. For longer operations it might be worth exploring.
 
+## 16. Verbose completion summaries inflated the orchestrator's context
+
+**What happened**: Sessions sent rich completion summaries (300-1500 chars each) to the user, who pasted them to the orchestrator. The orchestrator's context bloated faster than necessary — we burned through compaction cycles every ~30-40 summaries on a heavy day.
+
+**Why it matters**: The orchestrator only needs **enough to update one row** in `_progress.md`. Everything else is in the session's plan MD and pushed commits. The detailed prose, while pleasant to read, was duplicating context the orchestrator didn't need to retain.
+
+**Concrete numbers** (rough estimate for the ~120-plan operation):
+
+| Approach | Context per summary | Total for 120 summaries |
+|---|---|---|
+| Verbose summary (what we did) | ~3-5 KB | ~500 KB |
+| Verbose summary + orchestrator re-reads `_progress.md` | ~15 KB | ~1.5 MB |
+| Minimal summary + orchestrator uses `Edit` only | ~500 chars | ~60 KB |
+
+The orchestrator at peak was running well below its compaction limit but unnecessarily close to it. A heavier operation (300+ summaries) would have triggered compaction repeatedly.
+
+**Fix in this method going forward**: Two complementary tactics.
+
+### Tactic A: orchestrator avoids re-reading `_progress.md`
+
+The orchestrator should update `_progress.md` via the `Edit` tool's diff-only mechanism, not by reading the file each time and rewriting. This requires:
+
+- Reading `_progress.md` **once** at orchestrator startup (so the tool can target it)
+- After that, every update is `Edit(old_string=<one row>, new_string=<one row>)`
+- Re-reading is only necessary when the user asks for an explicit dashboard view
+
+This alone saves ~10 KB per summary.
+
+### Tactic B: sessions emit summaries in TWO sections (user-detail + orchestrator-short)
+
+We initially thought short summaries were strictly better. **They're not** — the user actually values rich summaries for their own situational awareness. The right move is to **separate the two audiences**:
+
+```
+=== Detailed summary (for the user) ===
+[whatever rich prose the session wants — for the user to read]
+- What was changed
+- Test results
+- Edge cases discovered
+- Cross-cutting observations
+- PR / commit info
+...
+
+=== Short summary (for the orchestrator, paste this) ===
+plan {ID} → {done|cancelled|blocked}
+commit: {hash} (pushed: {yes|no})
+PR: #{N} or "none"
+key: <30-chars take-away>
+out-of-scope: <0-2 lines, only if cross-cutting>
+```
+
+The user reads the detailed section themselves (no impact on orchestrator context — happens in the user's eyes/brain). They paste **only the short section** to the orchestrator. The orchestrator processes the short version with `Edit` + ≤2 sentence acknowledgment.
+
+Long detailed prose still belongs in:
+- The plan MD's execution log (audit trail, persisted)
+- The commit message (shipped with code)
+
+But also, in real-time: in the **"for the user"** section of the completion output. Don't strip it.
+
+### Combined effect
+
+With both tactics, orchestrator context per summary drops from ~15 KB to ~500 chars — a **30x reduction**. Operations of 500+ plans become tractable without ever hitting context compaction.
+
+### Recommendation for the bootstrap prompt
+
+Add to the orchestrator bootstrap (`templates/orchestrator-bootstrap-prompt.md`):
+
+```
+- Update _progress.md via Edit tool's diff-only mechanism. Do NOT re-Read the file for each update — read it once at startup.
+- Acknowledge summaries in ≤2 sentences. Don't restate what the user just pasted.
+- Note cross-cutting findings in a separate dedicated message, not inline with every acknowledgment.
+```
+
+Add to session starter prompts:
+
+```
+On completion, emit TWO sections:
+
+=== Detailed summary (for the user to read) ===
+[Whatever rich prose helps the user understand what changed]
+
+=== Short summary (paste this to the orchestrator) ===
+plan {ID} → done|cancelled|blocked
+commit: hash (pushed: yes|no)
+PR: #N or none
+key: <30-chars take-away>
+out-of-scope: <only if cross-cutting>
+```
+
+### Instructions for the human (user)
+
+The user is the bridge between sessions and the orchestrator. To keep the orchestrator lean, the user should:
+
+1. **Read the detailed section yourself** — that's where situational awareness lives. The orchestrator never sees it; no context cost.
+2. **Paste only the short section** into the orchestrator chat. The orchestrator processes that for `_progress.md` updates.
+3. If you want the orchestrator to know about a cross-cutting issue from the detailed section, **mention it explicitly in your next message** — e.g. "the 412 session also flagged a delegation-token security gap, please track that." Don't expect the orchestrator to infer it from a long paste.
+4. **Don't ask the orchestrator "summarize what happened in the last 3 sessions"** unless necessary — the orchestrator would have to re-read `_progress.md`, expanding context. Read `_progress.md` yourself instead.
+5. **Do ask the orchestrator "what should be in the next Wave?"** — that's high-value orchestrator reasoning, worth the context.
+
+This is collaborative discipline: the user does the reading, the orchestrator does the tracking, and the two pieces of context stay separate.
+
+---
+
 ## TL;DR
 
-Top 3 things to fix on Day 1 of any future engagement:
+Top 4 things to fix on Day 1 of any future engagement:
 
 1. **Merge to `main` between Waves**, don't let branches pile up
 2. **Keep `_progress.md` out of all `plan/<id>` branches** — orchestrator-only state
 3. **Establish PR/push policy and starter-prompt format upfront**, not at Wave 9
+4. **Short structured summaries + orchestrator uses `Edit` for `_progress.md`** — keeps context lean over hundreds of summaries

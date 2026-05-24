@@ -121,6 +121,43 @@ worktree: .worktrees/{INDEX_ID}/、branch: plan/{INDEX_ID}。
 PR/push: chore のため PR 不要・push 推奨。
 ```
 
+## Completion summary format (every session must follow)
+
+Every session should emit its completion summary in two sections — one for the user, one for the orchestrator. Include this in your starter prompt:
+
+```
+完了時は以下 2 セクション構成で出力すること:
+
+=== ユーザー向け詳細サマリ ===
+[このセクションは長くて OK。ユーザーが読んで状況把握する。
+ 実装内容、検証結果、発見、範囲外メモ、横断観測、PR/commit 情報など]
+
+=== オーケストレーター向け短サマリ (コピペ用) ===
+plan {ID} → done|cancelled|blocked
+commit: {hash} (pushed: yes|no)
+PR: #{N} or none
+key: <30 文字程度の要点>
+out-of-scope: <0-2 行、横断的なら>
+```
+
+```
+On completion, emit your summary in two sections:
+
+=== Detailed summary (for the user to read) ===
+[This section can be long. The user reads it for situational awareness.
+ Cover: what changed, why, what was discovered, residual issues,
+ cross-cutting observations, PR / commit info.]
+
+=== Short summary (for the orchestrator — user pastes this) ===
+plan {ID} → done|cancelled|blocked
+commit: {hash} (pushed: yes|no)
+PR: #{N} or none
+key: <30-chars take-away>
+out-of-scope: <0-2 lines, only if cross-cutting>
+```
+
+**Why two sections**: The user wants rich context for their own situational awareness. The orchestrator (a separate Claude Code session managing many of these) wants a short structured update so its context doesn't bloat across ~100 sessions. The user reads the detailed section themselves and pastes only the short section to the orchestrator.
+
 ## Tips for writing starter prompts
 
 - **Be concise** — ~200-300 chars works best; the plan MD has the details
