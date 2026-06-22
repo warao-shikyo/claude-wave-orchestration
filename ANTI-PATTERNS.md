@@ -15,9 +15,11 @@ Things we did wrong, things we'd do differently, things to avoid if you try this
 - After each Wave, merge the wave's results back to `main` (or to a known-good integration branch) **before** starting the next Wave.
 - Or: rebase each new worktree's branch on a designated "latest known good" branch instead of `origin/main`.
 
-**Workaround we used**: Created "integration branches" like `plan/999b` that cherry-picked from prior `plan/<id>` branches. This worked but was reactive.
+**Workaround we used**: Created "integration branches" like `plan/meta-002` that cherry-picked from prior `plan/<id>` branches. This worked but was reactive.
 
 **Recommendation**: Add a between-Wave step to your method: integrate results to `main`, then proceed.
+
+**v2 status**: standardized — [between-Wave integration](patterns/main-merge-strategy.md#between-wave-integration-during-the-operation) is now METHODOLOGY §4 step 6.5, and worktrees base off `integration/latest-known-good`.
 
 ## 2. `_progress.md` merge conflicts everywhere
 
@@ -41,9 +43,11 @@ Things we did wrong, things we'd do differently, things to avoid if you try this
 - Plan 412's "PR or not?" was a 3-message back-and-forth
 - Some chore plans got PRs (clutter), some new-feature plans didn't (lost visibility)
 
-**Fix**: Wave 9 introduced an explicit policy table. The table is now in [METHODOLOGY.md §6](METHODOLOGY.md#6-prpush-policy).
+**Fix**: Wave 9 introduced an explicit policy table.
 
-**Recommendation**: Define your push/PR policy on Day 1 of the operation. Put it in your starter prompt template. Refer to it every Wave.
+**Recommendation**: Don't make push/PR a per-session decision at all. The cleaner rule (now baked into the method) is that **a session master's landing authority ends at `commit`** — push, PR, and merge to main are all the user's call. No table to negotiate; sessions just commit.
+
+**v2 status**: standardized — the landing model is now [METHODOLOGY.md §6](METHODOLOGY.md#6-landing-model): sessions commit only; push / PR / merge are user-driven; deploying from the worktree for verification only is the one exception. This removes the per-Wave "PR or not?" churn entirely.
 
 ## 4. Topic drift on "remembered" plans
 
@@ -70,6 +74,8 @@ Things we did wrong, things we'd do differently, things to avoid if you try this
 - Have sessions write timestamps to a known location (e.g. update their row's `last_activity` field)
 - Or: orchestrator can spot-check with `git log --all --since=1h` to see which branches have recent commits
 - Or: instrument the launcher to log session PIDs and periodically check liveness
+
+**v2 status**: standardized — see [session-monitoring.md](patterns/session-monitoring.md) (a `last_activity` heartbeat plus on-demand `git log` spot-check, no polling).
 
 ## 6. We didn't establish "operational state vs project state" early
 
@@ -131,6 +137,8 @@ In practice we still drifted. Discipline is hard. Acknowledge it and move on if 
 - Or: explicitly accept that velocity = test debt, and budget for the test phase after
 - Or: alternate "build Waves" with "test Waves" to keep the debt manageable
 
+**v2 status**: standardized — see [test-waves.md](patterns/test-waves.md) (a test Wave every ~3 build Waves; each plan's DoD states how it was verified).
+
 ## 11. We didn't establish "what's the production reality" baseline
 
 **What happened**: Many "implicit done" verdicts read like: "the implementation looks done in code; can't tell if it works." We discovered later that things which looked done weren't actually deployed.
@@ -139,6 +147,8 @@ In practice we still drifted. Discipline is hard. Acknowledge it and move on if 
 - Before starting the operation, capture the deployment state baseline
 - Note: which branches/commits are actually live in production
 - Sessions should distinguish "code present in branch" vs "running in production"
+
+**v2 status**: standardized — the deployment baseline is now METHODOLOGY §0; sessions report deploy status as `none` / `verified-on-deploy` / `live`. See [progress-template.md](templates/progress-template.md).
 
 ## 12. We didn't have a `STOP` signal
 
@@ -156,6 +166,8 @@ In practice we still drifted. Discipline is hard. Acknowledge it and move on if 
 **Recommendation**:
 - If cost matters, instrument the launcher to log session start/end + use Claude Code's usage reports
 - For optimization, batch sessions are remarkably cheap per outcome — favor them where possible
+
+**v2 status**: partially addressed — the launcher now writes a per-launch record to `~/.claude/wave-launch-log.jsonl`; join it against Claude Code usage reports. See [METHODOLOGY §11](METHODOLOGY.md#11-cost-considerations).
 
 ## 14. We didn't audit memory updates
 
@@ -177,7 +189,7 @@ We didn't try it because the operation only ran 5 days. For longer operations it
 
 **What happened**: Sessions sent rich completion summaries (300-1500 chars each) to the user, who pasted them to the orchestrator. The orchestrator's context bloated faster than necessary — we burned through compaction cycles every ~30-40 summaries on a heavy day.
 
-**Why it matters**: The orchestrator only needs **enough to update one row** in `_progress.md`. Everything else is in the session's plan MD and pushed commits. The detailed prose, while pleasant to read, was duplicating context the orchestrator didn't need to retain.
+**Why it matters**: The orchestrator only needs **enough to update one row** in `_progress.md`. Everything else is in the session's plan MD and its commits on the local `plan/<id>` branch. The detailed prose, while pleasant to read, was duplicating context the orchestrator didn't need to retain.
 
 **Concrete numbers** (rough estimate for the ~120-plan operation):
 
@@ -212,15 +224,18 @@ We initially thought short summaries were strictly better. **They're not** — t
 - Test results
 - Edge cases discovered
 - Cross-cutting observations
-- PR / commit info
+- commit info
 ...
 
 === Short summary (for the orchestrator, paste this) ===
-plan {ID} → {done|cancelled|blocked}
-commit: {hash} (pushed: {yes|no})
-PR: #{N} or "none"
+plan {area}-{NNN} → {done|cancelled|blocked}
+commit: {hash} (push: no — landing authority ends at commit)
+verified: unit|integration|manual|deferred
+deploy: none|verified-on-deploy|live
+done-file: {area}-{NNN}-{slug}_done.md
 key: <30-chars take-away>
-out-of-scope: <0-2 lines, only if cross-cutting>
+new-issues: <new issues, 0-3 lines>
+residual: <residual work, 0-3 lines>
 ```
 
 The user reads the detailed section themselves (no impact on orchestrator context — happens in the user's eyes/brain). They paste **only the short section** to the orchestrator. The orchestrator processes the short version with `Edit` + ≤2 sentence acknowledgment.
@@ -254,11 +269,14 @@ On completion, emit TWO sections:
 [Whatever rich prose helps the user understand what changed]
 
 === Short summary (paste this to the orchestrator) ===
-plan {ID} → done|cancelled|blocked
-commit: hash (pushed: yes|no)
-PR: #N or none
+plan {area}-{NNN} → done|cancelled|blocked
+commit: hash (push: no — landing authority ends at commit)
+verified: unit|integration|manual|deferred
+deploy: none|verified-on-deploy|live
+done-file: {area}-{NNN}-{slug}_done.md
 key: <30-chars take-away>
-out-of-scope: <only if cross-cutting>
+new-issues: <new issues, only if any>
+residual: <residual work, only if any>
 ```
 
 ### Instructions for the human (user)
@@ -279,7 +297,7 @@ This is collaborative discipline: the user does the reading, the orchestrator do
 
 Top 4 things to fix on Day 1 of any future engagement:
 
-1. **Merge to `main` between Waves**, don't let branches pile up
-2. **Keep `_progress.md` out of all `plan/<id>` branches** — orchestrator-only state
-3. **Establish PR/push policy and starter-prompt format upfront**, not at Wave 9
+1. **Integrate between Waves** into `integration/latest-known-good`, don't let branches pile up
+2. **Keep `_progress.md` out of all `plan/<area>-<NNN>` branches** — orchestrator-only state
+3. **Sessions commit only** — push / PR / merge are the user's call; no per-Wave policy to negotiate
 4. **Short structured summaries + orchestrator uses `Edit` for `_progress.md`** — keeps context lean over hundreds of summaries

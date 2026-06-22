@@ -6,21 +6,52 @@
 
 ## Conventions
 
-- **Worktree path**: `.worktrees/<plan_id>/`
-- **Branch**: `plan/<plan_id>`
-- **Base**: `origin/main`
+- **Plan file**: `<area>-<NNN>-<slug>.md` (e.g. `auth-001-oauth-login.md`); **done is expressed by renaming the file to `<area>-<NNN>-<slug>_done.md`**, not by flipping the Status field
+- **Worktree path**: `.worktrees/<area>-<NNN>/`
+- **Branch**: `plan/<area>-<NNN>`
+- **Base**: `integration/latest-known-good` (preferred) — fall back to `origin/main` only on Wave 1, before any integration branch exists. Basing on stale `origin/main` is the #1 anti-pattern; see [between-Wave integration](../patterns/main-merge-strategy.md#between-wave-integration-during-the-operation).
 - **Launcher**: `python launch_claude.py <worktree-path> "<starter-prompt>"`
-- **Commit messages**: include `plan-<id>` (e.g. `feat(plan-123): add X`)
+- **Commit messages**: include `plan-<area>-<NNN>` (e.g. `feat(plan-auth-001): add OAuth login`)
+- **Landing model**: sessions commit only — push / PR / merge to main are the user's call (deploy from the worktree for verification only)
 - **Progress updates**: each session updates its own row; orchestrator merges to master
+- **Launch log**: `~/.claude/wave-launch-log.jsonl` (set by the launcher) — reconcile per-session cost here
+
+## Area registry & idle counter
+
+<!--
+`area` is a lowercase domain word (auth, billing, ui, api, infra, docs, ...) that
+prefixes every plan id. Do NOT distinguish systems by number ranges — humans can't
+memorize those. `meta-` is reserved for orchestration / meta plans.
+`idle_cycles` is the orchestrator's consecutive-no-change counter for the 20-min
+sleep loop: it sleeps (ScheduleWakeup, 1200s) after launching a wave and re-checks;
+after 3 cycles (~60 min) with no new `_done` files and no new `plan-` commits, it
+stops sleeping and waits for the user.
+-->
+
+- **Areas in use**: `auth`, `billing`, `ui`, `api`, `infra`, `docs`, `meta` (edit for your project)
+- **idle_cycles**: 0
+
+## Deployment baseline (capture before Wave 1)
+
+<!--
+Record what is ACTUALLY LIVE in production at operation start. Sessions must
+distinguish "code present in a branch" from "running in production". See
+ANTI-PATTERNS.md #11 and METHODOLOGY.md §0.
+-->
+
+- **Production commit/tag**: `<hash or tag>` (what's live right now)
+- **Captured on**: YYYY-MM-DD
+- **Environments**: prod = `<ref>`, staging = `<ref>`
+- Sessions report deploy status as one of: `none` / `verified-on-deploy` / `live` (sessions commit only; merge to main is the user's call, so there is no `merged-not-deployed` session state)
 
 ## Status legend
 
 - `draft` — Created, not ready for execution yet
 - `ready` — Worktree-ready, awaiting launch
 - `in_progress` — Session active
-- `done` — Plan complete
-- `cancelled` — No longer relevant (reason required)
-- `blocked` — External dependency (reason required)
+- `done` — Plan complete (the session renames the plan file to `..._done.md` to signal this)
+- `cancelled` — No longer relevant (reason required; stays as a Status, file is NOT renamed)
+- `blocked` — External dependency (reason required; stays as a Status, file is NOT renamed)
 
 ---
 
@@ -28,14 +59,15 @@
 
 <!--
 Add a new section per Wave. Pick 8-12 plans per Wave.
-For each row: ID, short title, wave number, status, launch timestamp, branch, notes.
+For each row: ID, short title, wave number, status, launch timestamp,
+last_activity (session-stamped heartbeat — see session-monitoring.md), branch, notes.
 -->
 
-| ID | Title | wave | status | launched_at | branch | notes |
-|---|---|---|---|---|---|---|
-| 101 | Add feature X | 1 | done | 2026-... | plan/101 | commit abc1234, PR #5 |
-| 102 | Refactor Y | 1 | blocked | 2026-... | plan/102 | blocked on plan-101 |
-| 103 | Audit Z | 1 | done (implicit) | 2026-... | plan/103 | no code change — already done in commit def5678 |
+| ID | Title | wave | status | launched_at | last_activity | branch | notes |
+|---|---|---|---|---|---|---|---|
+| auth-001 | Add OAuth login | 1 | done | 14:02 | 14:51 | plan/auth-001 | commit abc1234, push: no, deploy: none, done-file: auth-001-oauth-login_done.md |
+| billing-002 | Refactor invoicing | 1 | blocked | 14:02 | 14:20 | plan/billing-002 | blocked on plan-auth-001 |
+| api-003 | Audit search endpoint | 1 | done (implicit) | 14:03 | 14:18 | plan/api-003 | no code change — already done in commit def5678 |
 
 ---
 
@@ -119,8 +151,11 @@ YYYY-MM-DD
 When you're a main session and want to update your own row:
 
 1. Edit your row in this file (in your worktree's copy)
-2. Mention it in your completion summary
-3. The orchestrator will re-apply your change to the master copy
+2. **Stamp `last_activity` (HH:MM)** whenever you start, finish a commit, ask the user a blocking question, or reach a terminal state. This is cheap bookkeeping for liveness monitoring — not a status change. See [session-monitoring.md](../patterns/session-monitoring.md).
+3. When the plan is complete, **rename the plan file to `..._done.md`** (the orchestrator detects done by that filename) and note `done-file:` in your row. `cancelled` / `blocked` stay as a Status with a reason — no rename.
+4. Your landing authority ends at `commit`: record `push: no` and your deploy status in `notes` as `none` / `verified-on-deploy` / `live`. push / PR / merge to main are the user's call.
+5. Put any new issues / residual work in your completion summary — the orchestrator files them into the backlog.
+6. Mention the change in your completion summary; the orchestrator re-applies your change to the master copy.
 
 **Do not** commit your worktree's `_progress.md` to your branch — the orchestrator manages this file's history separately. (See [ANTI-PATTERNS.md](../ANTI-PATTERNS.md#2-_progressmd-merge-conflicts-everywhere) for why.)
 

@@ -2,6 +2,16 @@
 
 The full method, in depth. Read [README.md](README.md) first for the elevator pitch.
 
+## 0. Kickoff: capture the baseline
+
+Before launching Wave 1, make three decisions that are cheap upfront and expensive to retrofit (we retrofitted all three — ANTI-PATTERNS #1, #3, #11):
+
+1. **Deployment baseline** — Record what is actually live in production now (commit/tag per environment). "Code in a branch" ≠ "running in production"; sessions report deploy status as `none` / `verified-on-deploy` / `live`. Store it at the top of [`_progress.md`](templates/progress-template.md).
+2. **Landing model** — Session masters carry plans to **commit only**; push / PR / merge to main are the user's call (see [§6](#6-landing-model)). This is fixed by the skill, but state it in the starter-prompt template so every session sees it.
+3. **Integration target** — Decide where Wave results land between Waves (default: an `integration/latest-known-good` branch). See [§4 step 6.5](#4-wave-anatomy).
+
+Also fix the **naming convention** up front: the area-prefix scheme `<area>-<NNN>-<slug>.md` (e.g. `auth-001-oauth-login.md`), branch `plan/<area>-<NNN>`, worktree `.worktrees/<area>-<NNN>/`. Systems are distinguished by area word (`auth`, `billing`, `ui`, …), never by number band. The `meta-` area is reserved for orchestration-meta plans.
+
 ## 1. The problem this method solves
 
 You have a project with:
@@ -38,8 +48,9 @@ Think of it as a **parallel pipeline** with three roles:
 │                     │    │                     │
 │ Owns plan A end to  │    │ Owns plan B end to  │
 │ end. Talks to user  │    │ end. Talks to user  │
-│ directly. Commits,  │    │ directly. Commits,  │
-│ pushes, opens PR.   │    │ pushes, opens PR.   │
+│ directly. Commits   │    │ directly. Commits   │
+│ (push/PR/merge =    │    │ (push/PR/merge =    │
+│ user's call).       │    │ user's call).       │
 └──────────┬──────────┘    └──────────┬──────────┘
            │                          │
            │ summary at completion    │
@@ -49,7 +60,7 @@ Think of it as a **parallel pipeline** with three roles:
 
 Three properties make this work:
 
-1. **Worktree isolation** — Each session works in its own `.worktrees/<plan_id>/` directory on its own branch. They cannot step on each other.
+1. **Worktree isolation** — Each session works in its own `.worktrees/<area>-<NNN>/` directory on its own branch. They cannot step on each other.
 2. **Single source of truth** — `_progress.md` lives in the orchestrator's working directory only. Worktree copies are read-only references.
 3. **Direct user dialogue per session** — Main sessions talk to the user without going through the orchestrator. The orchestrator handles state, not conversation.
 
@@ -79,15 +90,17 @@ The orchestrator is the **conductor**, not a performer.
 **Does:**
 - Owns the plan it was launched with, from start to "done" or "cancelled"
 - Talks to the user directly when needed
-- Commits, pushes, opens PRs as appropriate (see [PR/push policy](#prpush-policy))
+- **Commits** — that's the end of its landing authority (see [§6 landing model](#6-landing-model))
+- May deploy from its worktree for **verification only** (not a git push/merge)
+- Marks done by **renaming its plan file to `<id>-<slug>_done.md`** (not by flipping a Status field)
 - Updates its own row in `_progress.md` (and in the worktree copy)
 - Sometimes discovers the plan is already done — judges it "implicit done"
 - Sometimes discovers the plan should be canceled — judges it "cancelled" with reasoning
 - Reports back when finished
 
 **Does NOT:**
+- Push, open PRs, or merge to main (all the user's call)
 - Edit other sessions' worktrees
-- Push to main directly
 - Make decisions outside its plan's scope (escalates to user or noted as "out of scope")
 
 ### User
@@ -124,7 +137,10 @@ Wave start
    (5 sec keeps prompt cache warm; longer if hitting .claude.json locks)
    │
    ▼
-4. SESSIONS WORK independently — orchestrator does NOT poll
+4. SESSIONS WORK independently — orchestrator does NOT busy-poll.
+   After launching the whole wave, the orchestrator sleeps 20 min
+   (ScheduleWakeup), then wakes to check for _done files + new commits.
+   Up to 3 idle cycles (≈60 min), then it stops and waits for the user.
    │
    │   ┌──────────────────────────────┐
    │   │ User receives questions per  │
@@ -142,12 +158,33 @@ Wave start
 6. WAVE DONE when all N rows are done/cancelled/blocked
    │
    ▼
+6.5 INTEGRATE this Wave into integration/latest-known-good (see below)
+   │
+   ▼
 7. ORCHESTRATOR plans next Wave
-   - Includes follow-up items found by this Wave
-   - May spawn new plans (e.g. for issues discovered mid-session)
+   - Files every summary's new-issues + residual into the backlog (mandatory)
+   - Launching a follow-up plan session needs the user's OK first
+   - Periodically archives _done plans into docs/specs/<id>-<slug>.md
+   - Every ~3rd Wave, schedule a TEST Wave instead of a build Wave
 
 Wave end
 ```
+
+### Orchestrator landing & follow-up rules
+
+- **Always file new issues / residual work into the backlog.** Each session's `new-issues` and `residual` fields go into the candidate-plans list (or `docs/backlog.md`). Never swallow them.
+- **Don't auto-spawn follow-up sessions.** When a backlog item is ready to become a plan session, ask the user first.
+- **Archive done plans as specs.** Periodically (per Wave boundary, or once a few accumulate) move `<id>-<slug>_done.md` into `docs/specs/<id>-<slug>.md` so the work survives as documentation.
+- **The orchestrator only commits** `_progress.md` updates, new plan MDs, and `docs/specs` archival — never feature code, never to `plan/<id>` branches.
+
+### Step 6.5 in detail — between-Wave integration
+
+Letting `plan/<id>` branches pile up unmerged is the **#1 anti-pattern**: later Waves base off a stale `origin/main` and re-discover already-fixed bugs. So after each Wave:
+
+1. Merge the Wave's `done` branches into `integration/latest-known-good`, resolving the small conflicts now (~10 branches) rather than later (~90)
+2. Base the next Wave's worktrees on that branch
+
+This is **operation-internal** integration; the big, human-driven merge to `main` still happens after the operation ([§10](#10-after-the-operation)). Full mechanics in [main-merge-strategy.md](patterns/main-merge-strategy.md#between-wave-integration-during-the-operation).
 
 ### Wave sizing
 
@@ -179,26 +216,30 @@ This file is the only thing that needs to be consistent across all 100+ sessions
 **Started**: YYYY-MM-DD
 **Goal**: Move all plans in <plans dir> to done or cancelled
 
+## Areas
+- auth, billing, ui, api, infra, docs, meta (orchestration-meta)
+
 ## Conventions
-- worktree path: ...
-- branch: plan/<id>
-- base: origin/main
+- worktree path: .worktrees/<area>-<NNN>/
+- branch: plan/<area>-<NNN>
+- base: integration/latest-known-good (origin/main only on Wave 1)
 
 ## Status legend
-- draft / ready / in_progress / done / cancelled / blocked
+- draft / ready / in_progress / done (= _done file) / cancelled / blocked
+- idle_cycles: 0   (consecutive no-change wake cycles; 3 → wait for user)
 
 ## Wave N (YYYY-MM-DD)
 
 | ID | Title | wave | status | launched_at | branch | notes |
 |---|---|---|---|---|---|---|
-| 100 | Add feature X | 1 | done | 2026-... | plan/100 | commit abc123, PR #5 |
-| 101 | Refactor Y | 1 | blocked | 2026-... | plan/101 | blocked on 100 |
+| auth-001 | Add feature X | 1 | done | 2026-... | plan/auth-001 | commit abc123, push: no, deploy: none, file: auth-001-...-done |
+| billing-002 | Refactor Y | 1 | blocked | 2026-... | plan/billing-002 | blocked on plan-auth-001 |
 ...
 
 ## Execution log
 
 YYYY-MM-DD
-- HH:MM Wave 1 launched: 100, 101, ...
+- HH:MM Wave 1 launched: auth-001, billing-002, ...
 - HH:MM Wave 1 landed: 8 done, 1 cancelled, 1 blocked
 ```
 
@@ -211,22 +252,24 @@ YYYY-MM-DD
 
 This is the single biggest gotcha. See [ANTI-PATTERNS.md](ANTI-PATTERNS.md).
 
-## 6. PR/push policy
+## 6. Landing model
 
-Establish this on Day 1, not Day 5 (we learned this the hard way):
+The original engagement let each session decide whether to push and open PRs, and it caused churn (ANTI-PATTERNS #3). The method is now simple and fixed by the skill:
 
-| Case | push | PR |
-|---|---|---|
-| New feature / large implementation | **required** | **recommended** |
-| New plan MD / docs only (chore) | recommended | not needed |
-| Implicit done verdict (no code change) | recommended | not needed |
-| Bug fix | **required** | **recommended** |
-| **Tests added alone** | **required** | **not needed** (if you plan a dedicated test phase) |
-| **Security / fallback removal** | **required** | **required** |
-| INDEX done verdict | recommended | not needed |
-| Cancelled verdict | recommended | not needed |
+> **A session master's landing authority ends at `commit`.** push, PR, and merge to main are **all the user's call.**
 
-The "PR" column matters because reviewing 80 PRs at once is hellish. Force PRs only where it really matters; for everything else the orchestrator (or you) can review by scanning branches.
+| Action | Who |
+|---|---|
+| Implement + **commit** to `plan/<id>` | session master (on its own judgment) |
+| Mark done = rename file to `<id>-<slug>_done.md` + commit | session master |
+| Deploy from the worktree for **verification only** | session master (if needed) |
+| **push** the branch | user |
+| **open a PR** | user |
+| **merge to main** / production rollout | user |
+
+Why: if every session pushes / merges independently, branches collide and code rolls back. Keeping each session at commit-only means all the work survives as `plan/<id>` local branches, and the user decides — once, with full context — what merges and when (see [§10](#10-after-the-operation) and [main-merge-strategy.md](patterns/main-merge-strategy.md)).
+
+Sessions report deploy status as `none` / `verified-on-deploy` / `live` in their completion summary, so "code committed" is never confused with "running in production".
 
 ## 7. Patterns to use
 
@@ -236,7 +279,9 @@ These are detailed in [patterns/](patterns/) but here's the index:
 - **[Batch sessions](patterns/batch-sessions.md)** — Consolidating 10+ trivial judgments into one session (the "999 family" pattern)
 - **[Implicit done detection](patterns/implicit-done-detection.md)** — Verify rather than re-implement
 - **[INDEX done pattern](patterns/index-done-pattern.md)** — Closing parent INDEX plans once children are settled
-- **[Main merge strategy](patterns/main-merge-strategy.md)** — Resolving the 90-orphan-branches problem
+- **[Main merge strategy](patterns/main-merge-strategy.md)** — Resolving the 90-orphan-branches problem, plus between-Wave integration
+- **[Test Waves](patterns/test-waves.md)** — Interleaving verification Waves so test debt stays bounded
+- **[Session monitoring](patterns/session-monitoring.md)** — Lightweight liveness tracking (heartbeat + `git log`)
 
 ## 8. Lifecycle of a typical plan
 
@@ -245,11 +290,11 @@ draft → ready → in_progress → done | cancelled
 
 with side detours through:
   → blocked (record reason; orchestrator may reassign or wait)
-  → "implicit done" verdict (no code change, just status flip + audit trail)
+  → "implicit done" verdict (no code change, just _done rename + audit trail)
   → INDEX consolidation (close once children are done)
 ```
 
-The session decides which path. The orchestrator records what happened.
+`done` is expressed by renaming the plan file to `<id>-<slug>_done.md` and committing; `cancelled` / `blocked` are written as `## Status` edits with a reason. The session decides which path. The orchestrator records what happened.
 
 ## 9. When does the operation end?
 
@@ -261,9 +306,9 @@ You can also declare "phase complete" at any natural stopping point — the meth
 
 Things that need to happen after the last Wave:
 
-1. **Main merge orchestration** — 80+ branches don't merge themselves. See the pattern doc.
-2. **Comprehensive testing** — Sessions skipped detailed testing in favor of velocity. Now's the time for the QA phase.
-3. **Deployment** — All your work is on branches. Get it to production.
+1. **Main merge orchestration** — 80+ branches don't merge themselves. See the pattern doc. (If you followed [§4 step 6.5](#4-wave-anatomy), most are already integrated into `integration/latest-known-good`, so this is far smaller.)
+2. **Final comprehensive test pass** — If you ran [test Waves](patterns/test-waves.md) every ~3 Waves, this is *confirmation*, not *discovery*: most regressions were already caught and re-filed as plans during the operation. If you deferred all testing, this is the dreaded all-at-once QA phase — schedule it explicitly, don't let it float.
+3. **Deployment** — All your work is on branches/integration. Get it to production, and update the deployment baseline (§0) to match reality.
 4. **Memory / knowledge consolidation** — The orchestrator may have accumulated valuable cross-cutting observations. Distill them into your project's living docs.
 
 These are typically separate operations from "clearing the backlog." Don't conflate them.
@@ -276,6 +321,23 @@ These are typically separate operations from "clearing the backlog." Don't confl
 - Stagger session launches by 5-6 seconds (gives cache time to populate)
 - Keep starter prompts short and consistent (better cache hit rate)
 - For "implicit done" verdicts, a session may use 1/10th the tokens of a full implementation session — these are very cheap
+
+### Tracking cost per session
+
+We originally tracked no per-session cost, so we knew the operation was expensive but not *which* sessions were the expensive ones (ANTI-PATTERN #13). The launcher now appends a record to a launch log on every launch:
+
+```
+~/.claude/wave-launch-log.jsonl   (override with WAVE_LAUNCH_LOG)
+{"ts": "...", "event": "launch", "plan_id": "415", "project_path": "..."}
+```
+
+To reconcile cost:
+
+1. Each line gives a session's start time and plan id
+2. Join against Claude Code's own usage report for the same window
+3. Attribute tokens to plan ids by launch time
+
+Use this to confirm what we observed by feel: **batch and audit sessions are remarkably cheap per outcome** (often 1/10th of an implementation session). Favor them where the work allows — see [batch-sessions.md](patterns/batch-sessions.md) and [implicit-done-detection.md](patterns/implicit-done-detection.md).
 
 In our case, the 5-day operation closed ~120 plans. The token cost was significant but well below the value delivered.
 
@@ -307,7 +369,7 @@ These should be in your bootstrap prompt (see [`templates/orchestrator-bootstrap
 1. **Read `_progress.md` once at startup**, then use `Edit` for every subsequent update
 2. **Acknowledge completion summaries in ≤2 sentences**: status updated + 1 cross-cutting observation if any
 3. **Don't re-Read files** unless the session's last edit was 30+ minutes ago (assume your "remembered state" is current)
-4. **Don't grep/glob unless asked** — the user can see `_progress.md` too if they need full state
+4. **Don't grep/glob unless asked** — the user can see `_progress.md` too if they need full state (the one routine exception is the scheduled 20-min wake-check, which scans for `_done` files and recent `plan-` commits — see [§4](#4-wave-anatomy))
 5. **Batch acknowledgments** when 3-4 summaries arrive in succession — one combined response is leaner than four
 
 ### Specific instructions for sessions
@@ -318,18 +380,21 @@ Emit **two sections** on completion — one for the user, one for the orchestrat
 
 ```
 === Detailed summary (for the user) ===
-[Rich prose: what changed, why, what was discovered, residual issues, anything cross-cutting.
-The user reads this for situational awareness. Don't restrain length.]
+[Rich prose: what changed, why, what was discovered, new issues, residual work,
+anything cross-cutting. The user reads this for situational awareness. Don't restrain length.]
 
 === Short summary (paste this to the orchestrator) ===
-plan {ID} → {done|cancelled|blocked}
-commit: {hash} (pushed: {yes|no})
-PR: #{N} or "none"
+plan {id} → {done|cancelled|blocked}
+commit: {hash} (push: no — commit is the end of responsibility)
+verified: unit|integration|manual|deferred
+deploy: none|verified-on-deploy|live
+done-file: {id}-{slug}_done.md
 key: <30-chars take-away>
-out-of-scope: <0-2 lines, only if cross-cutting>
+new-issues: <new issues, 0-3 lines>
+residual: <residual work, 0-3 lines>
 ```
 
-The short section is ~200 chars typical. **Detailed prose stays in the user-facing section + plan MD execution log + commit messages**, not in what the orchestrator processes.
+The short section is ~200 chars typical. **Detailed prose stays in the user-facing section + plan MD execution log + commit messages**, not in what the orchestrator processes. The `new-issues` / `residual` fields are mandatory raw material — the orchestrator files them into the backlog.
 
 ### Specific instructions for the human (user)
 

@@ -1,6 +1,20 @@
 # Pattern: Main merge strategy
 
-After Waves, you have **dozens of orphan `plan/<id>` branches** that need to land on `main`. Naive merging causes conflicts and chaos. This pattern offers a structured approach.
+After Waves, you have **dozens of orphan `plan/<id>` branches** (local — sessions commit but do not push) that need to land on `main`. Naive merging causes conflicts and chaos. This pattern offers a structured approach. Throughout, remember that **sessions only commit**: pushing, opening PRs, and merging to `main` are all user decisions, so this whole phase is human-driven.
+
+It covers two integrations: the **lightweight between-Wave integration** that runs *during* the operation (next section), and the **heavy main-merge** that runs *after* it (the rest of this doc).
+
+## Between-Wave integration (during the operation)
+
+Letting `plan/<id>` branches pile up unmerged is the **#1 anti-pattern**: each new Wave bases its worktrees off a `origin/main` that froze on Day 0, so sessions re-discover already-fixed bugs ([ANTI-PATTERNS #1](../ANTI-PATTERNS.md#1-worktrees-were-created-from-stale-originmain)).
+
+After each Wave:
+
+1. Merge the Wave's `done` branches into a single `integration/latest-known-good` branch
+2. Run the suite there — this is where Waves combine, and the natural home for [test Waves](test-waves.md)
+3. Base the next Wave's worktrees on it: `git worktree add .worktrees/<id> -b plan/<id> integration/latest-known-good`
+
+Resolve the small conflicts now (~10 branches) rather than deferring them to the ~90-branch main-merge below. This integration branch *is* the "`meta-002`" we built reactively in the original engagement — just kept green from Day 1.
 
 ## The problem
 
@@ -18,21 +32,21 @@ If you `git merge plan/X1 plan/X2 ... plan/X90` naively, you'll spend days on co
 
 ### Step 0: Identify the integration branch
 
-In our case, **`plan/999b`** emerged as the integration branch. It was the result of a batch session ([batch sessions](batch-sessions.md)) that:
+In our case, **`plan/meta-002`** emerged as the integration branch. It was the result of a batch session ([batch sessions](batch-sessions.md)) that:
 
-- Cherry-picked from `plan/415`, `plan/415a`, `plan/422`, `plan/423` (test-recovery work)
+- Cherry-picked from `plan/api-003`, `plan/api-003a`, `plan/ui-004`, `plan/ui-005` (test-recovery work)
 - Resolved cross-cutting conflicts
 - Ended with **366/366 tests passing**
 
-Once `plan/999b` existed, the strategy became: **base everything on `plan/999b`**.
+Once `plan/meta-002` existed, the strategy became: **base everything on `plan/meta-002`**.
 
 ### Step 1: Categorize remaining branches by risk/priority
 
 ```
-Priority A — Security: 402a, 759, etc. (must merge first, high stakes)
-Priority B — Feature group 1: 418-423 (ielove Write)
-Priority C — Feature group 2: corp_org/750 series
-Priority D — Feature group 3: 500/600/800 series
+Priority A — Security: auth-002a, auth-009, etc. (must merge first, high stakes)
+Priority B — Feature group 1: api-018..api-023 (project Write)
+Priority C — Feature group 2: corp-* series
+Priority D — Feature group 3: intake-* / devtools-* series
 Priority E — Docs/chore/INDEX
 ```
 
@@ -42,12 +56,14 @@ This grouping is project-specific. The point: **don't merge all-at-once or merge
 
 For each group:
 
-1. `git checkout plan/999b` (or whichever integration branch)
+1. `git checkout plan/meta-002` (or whichever integration branch)
 2. Cherry-pick or merge the branches in that group
 3. Resolve conflicts (most should be minor if categorized well)
 4. Run full test suite
 5. Push to a `release/groupN` branch
 6. Open one PR for the entire group
+
+(Steps 5-6 are where the user takes over: sessions never pushed or opened PRs, so this phase is the first time these branches leave the local machine.)
 
 This produces **~5 PRs** (one per priority) instead of 90 PRs. Reviewable.
 
@@ -67,7 +83,9 @@ Three deployment events instead of one big one. Each catches issues from a small
 Before starting the merge, scan all branches for hot files (touched by many branches):
 
 ```bash
-for branch in $(git branch -r --list 'origin/plan/*'); do
+# Local branches, since sessions commit without pushing. Swap to
+# 'origin/plan/*' only if you've already pushed them for review.
+for branch in $(git branch --list 'plan/*' | sed 's/^[* ]*//'); do
   git diff --name-only main..$branch
 done | sort | uniq -c | sort -rn | head -20
 ```
@@ -92,23 +110,26 @@ Plan for hot files **before** starting merges. For each:
 - Decide who "owns" the merged version
 - Document the merge strategy in the integration branch
 
-## Identifying unpushed branches
+## Identifying local-only branches and uncommitted work
 
-Some sessions commit locally but don't push. Catch them before they're lost:
+In v2, **local branches are the normal state** — sessions commit but never push, so every `plan/<id>` branch lives only on your machine until the user decides to merge or push it. The risk is not "unpushed" (that's expected) but **losing a branch's commits when its worktree is removed**, or leaving uncommitted changes behind. Check before deleting any worktree:
 
 ```bash
-# List remote branches
-git branch -r --list 'origin/plan/*'
+# All local plan branches and their last commit
+git for-each-ref --format='%(refname:short) %(committerdate:relative)' refs/heads/plan/
 
-# List local branches
-git branch --list 'plan/*'
+# Any worktree with uncommitted changes? (these would vanish on worktree removal)
+for wt in .worktrees/*/; do
+  echo "== $wt =="; git -C "$wt" status --short
+done
 
-# Diff: branches that exist locally but not on origin
+# Optional, only if you have already pushed some for review:
+# branches that exist locally but not on origin
 comm -23  <(git branch --list 'plan/*' | sed 's/^[* ]*//' | sort) \
           <(git branch -r --list 'origin/plan/*' | sed 's|origin/||' | sort)
 ```
 
-Push these before you delete worktrees. We almost lost work this way (plan 604 and plan 426 had local-only commits at one point).
+Confirm every worktree is clean (all work committed to its `plan/<id>` branch) before you delete it. We almost lost work this way (`plan/auth-026` and `plan/api-026` had uncommitted changes in their worktrees at one point).
 
 ## When conflicts can't be auto-resolved
 
@@ -165,11 +186,12 @@ This plan was **for the user to execute later** — the session didn't run the m
 These are useful during the merge phase:
 
 ```bash
-# Show branches and their unmerged commit count
-git for-each-ref --format='%(refname:short) %(committerdate:relative) %(authoremail)' refs/remotes/origin/plan/
+# Show branches and their last activity (use refs/heads/plan/ for the
+# local-only branches sessions produce; refs/remotes/origin/plan/ if pushed)
+git for-each-ref --format='%(refname:short) %(committerdate:relative) %(authoremail)' refs/heads/plan/
 
 # Find branches with no recent activity (might be safely closed)
-git for-each-ref --format='%(refname:short) %(committerdate:short)' refs/remotes/origin/plan/ | sort -k2
+git for-each-ref --format='%(refname:short) %(committerdate:short)' refs/heads/plan/ | sort -k2
 
 # Conflict prediction
 git merge-tree $(git merge-base main plan/X) main plan/X | grep '<<<<<<' | wc -l

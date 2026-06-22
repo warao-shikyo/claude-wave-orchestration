@@ -62,8 +62,7 @@ In the plan MD's execution log:
 
 ### 5. Update status
 
-Plan MD: `draft` → `done` (or `cancelled`)
-`_progress.md`: status column updated, notes column includes commit hash references
+If the verdict is **done**, rename the file to `<id>-<slug>_done.md` (`git mv` + `chore(plan-<id>): mark done`). If **cancelled**, leave the filename and set the `## Status` line to `cancelled` with the reason. Either way, update `_progress.md`: status column updated, notes column includes commit hash references. Work is committed only — push / PR / merge stay with the user.
 
 ## Why "implicit done" beats "re-implement"
 
@@ -128,32 +127,34 @@ In the plan MD, append something like:
 ```markdown
 ## Execution log
 
-2026-XX-XX — Implicit done audit by session plan-NNN
+2026-XX-XX — Implicit done audit by session plan-<area>-NNN
 - Criterion 1 (X file exists): ✓ — present at `path/to/X.py`, last modified `abc1234` (2026-YY-ZZ)
 - Criterion 2 (test passes): ✓ — `pytest tests/test_X.py` 12/12 PASS
 - Criterion 3 (API endpoint registered): ✓ — `main.py:42` registers `bp_X`
 - Verdict: **done (implicit)**. Plan implementation was completed by commit abc1234 (2026-YY-ZZ) and shipped to production at deploy 5678. Plan was never closed administratively.
+- Action: `git mv <id>-<slug>.md <id>-<slug>_done.md` + `chore(plan-<id>): mark done` (commit only; no push/PR).
 ```
 
 This is auditable. A future reader can verify each line.
 
 ## Real example
 
-In our engagement, plan 432 ("customer history by phone benchmark") was sitting in `draft`. The Wave 8 session that picked it up found:
+In our engagement, plan `api-032` ("customer history by phone benchmark") was sitting in `draft`. The Wave 8 session that picked it up found:
 
 - Tool `customer_history_by_phone_tool` already existed in `main` (commit `8de44f2`, 2026-05-04)
 - Tool already deployed (Cloud Build `031604dc`)
 - Tool already registered in MCP
-- Tool already used by benchmark plan 433
+- Tool already used by benchmark plan `api-033`
 
-Total session time: about 30 minutes for the audit. Outcome: `done (implicit)`. Saved: weeks of "let me reimplement this..."
+Total session time: about 30 minutes for the audit. Outcome: `done (implicit)` — the session renamed the plan MD to `api-032-...._done.md` and committed `chore(plan-api-032): mark done`. Saved: weeks of "let me reimplement this..."
 
 This pattern came up so many times that we built a starter-prompt variant specifically for "audit-first" sessions:
 
 ```
-"Plan {ID} has been in {STATUS} for a while. Before implementing anything,
-audit whether the plan is already done. Look for: {criteria}. If done,
-update plan MD with evidence and verdict. If not done, then implement.
+"Plan {ID} ({area}-{NNN}) has been in {STATUS} for a while. Before implementing
+anything, audit whether the plan is already done. Look for: {criteria}. If done,
+record evidence + verdict in the plan MD and rename it to {ID}-{slug}_done.md.
+If not done, then implement. Commit only — push/PR/merge are the user's call.
 Either way, finish with a clear status."
 ```
 

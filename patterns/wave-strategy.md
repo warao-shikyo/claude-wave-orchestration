@@ -53,6 +53,8 @@ Across multiple Waves, the pattern that worked for us:
 5. **Waves 9-10**: Finishing wave. Pick up the stragglers, force-resolve blocked items where possible.
 6. **Wave 11+**: Meta-work (testing plan, merge orchestration, retrospectives).
 
+**Test cadence**: every ~3rd Wave, run a [test Wave](test-waves.md) instead of a build Wave, so verification debt stays bounded.
+
 We did 11 Waves over 5 days for a ~140-item backlog. Your scale will vary.
 
 ## Between Waves
@@ -62,7 +64,7 @@ After each Wave completes (all rows are `done|cancelled|blocked`):
 1. **Update master `_progress.md`** — reflect all outcomes
 2. **Note cross-cutting findings** — what did sessions independently discover?
 3. **Identify follow-ups** — new plans needed? Add to candidate list.
-4. **Decide: merge to main now or defer?** — see [main merge strategy](main-merge-strategy.md)
+4. **Integrate this Wave** into `integration/latest-known-good` so the next Wave isn't based on stale main — see [between-Wave integration](main-merge-strategy.md#between-wave-integration-during-the-operation)
 5. **Pick next Wave's plans** — apply composition formula above
 
 The "between" gap shouldn't be long — momentum matters.
@@ -77,7 +79,7 @@ Stagger session launches by **5-6 seconds**, not all at once:
 
 ```bash
 # Pseudo-orchestration
-for plan_id in $WAVE; do
+for plan_id in $WAVE; do   # e.g. auth-001 billing-003 ui-002 ...
   python launch_claude.py .worktrees/$plan_id "<starter prompt>"
   sleep 5
 done
@@ -109,18 +111,18 @@ If a session's worktree exists but has no recent commits, ask the user.
 Wave 6 from our engagement (10 sessions, mixed composition):
 
 ```
-| ID    | Type                   | Outcome                              |
-|-------|------------------------|--------------------------------------|
-| 420   | Implementation re-run  | done (was blocked on prior wave)     |
-| 421   | Implementation re-run  | done                                 |
-| 415a  | New plan from finding  | done (test-suite fix)                |
-| 999   | Batch (11 items)       | done (2 done, 9 cancelled)           |
-| 503   | Implementation         | done                                 |
-| 509   | Implementation         | done                                 |
-| 510   | Implementation         | done                                 |
-| 603   | Implementation         | blocked (external dependency)        |
-| 818   | Bug fix                | done                                 |
-| 819   | Stability hardening    | done                                 |
+| ID         | Type                   | Outcome                              |
+|------------|------------------------|--------------------------------------|
+| billing-004| Implementation re-run  | done (was blocked on prior wave)     |
+| billing-005| Implementation re-run  | done                                 |
+| api-003a   | New plan from finding  | done (test-suite fix)                |
+| meta-001   | Batch (11 items)       | done (2 done, 9 cancelled)           |
+| ui-006     | Implementation         | done                                 |
+| ui-009     | Implementation         | done                                 |
+| ui-010     | Implementation         | done                                 |
+| infra-003  | Implementation         | blocked (external dependency)        |
+| auth-018   | Bug fix                | done                                 |
+| auth-019   | Stability hardening    | done                                 |
 ```
 
-9 done, 1 blocked (external). Mix of types meant momentum stayed high. The batch session (999) alone retired 11 items.
+9 done, 1 blocked (external). Mix of types meant momentum stayed high. The batch session (`meta-001`) alone retired 11 items.

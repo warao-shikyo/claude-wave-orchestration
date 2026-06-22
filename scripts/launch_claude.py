@@ -16,12 +16,20 @@ What it does:
     2. Registers the project as "trusted" in ~/.claude.json (skips if already)
     3. Launches `claude` CLI in a new Windows Terminal tab, cd'd into the project
     4. Passes the starter prompt as a CLI argument so the session starts with it
+    5. Appends a launch record (timestamp + plan id) to a JSONL log, for cost
+       and monitoring reconciliation (see WAVE_LAUNCH_LOG below)
 
 What it does NOT do:
     - Wait for the session to finish
-    - Track session liveness
+    - Track session liveness (the launch log records starts only, not exits)
     - Manage worktree creation (that's the orchestrator's job)
     - Update _progress.md
+
+Launch log:
+    Each launch appends one JSON line to ~/.claude/wave-launch-log.jsonl
+    (override with the WAVE_LAUNCH_LOG env var). Use it to reconcile per-session
+    cost against Claude Code's usage reports, and as the data source for a
+    liveness script (join against `git for-each-ref refs/heads/plan/`).
 """
 import json
 import os
@@ -29,10 +37,15 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 CLAUDE_JSON_PATH = Path.home() / ".claude.json"
 LOCK_RETRY_DELAYS = [1, 2, 4, 8]  # exponential backoff for ~/.claude.json lock contention
+# Launch log path — override with WAVE_LAUNCH_LOG. One JSON line per launch.
+LAUNCH_LOG_PATH = Path(
+    os.environ.get("WAVE_LAUNCH_LOG", str(Path.home() / ".claude" / "wave-launch-log.jsonl"))
+)
 
 
 def usage_and_exit():
@@ -96,6 +109,28 @@ def resolve_claude_cmd() -> str:
     """Find the claude CLI executable."""
     cmd = shutil.which("claude") or shutil.which("claude.cmd") or "claude"
     return cmd
+
+
+def append_launch_log(project_path: str, plan_id: str) -> None:
+    """Append one launch record to the JSONL launch log.
+
+    This is auxiliary bookkeeping for cost/monitoring reconciliation, not a
+    prerequisite for launching. If the log can't be written we warn and carry
+    on — we do NOT silently swallow the error, and we do NOT block the launch.
+    """
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": "launch",
+        "plan_id": plan_id,           # worktree directory name == plan id by convention
+        "project_path": project_path,
+    }
+    try:
+        LAUNCH_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(LAUNCH_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        print(f"Launch logged to {LAUNCH_LOG_PATH}")
+    except OSError as e:
+        print(f"WARNING: could not write launch log ({e}); session launched anyway.")
 
 
 def launch_in_new_window_windows(project_path: str, tab_title: str, claude_cmd: str, extra_args: list) -> None:
@@ -167,6 +202,7 @@ def launch_session(project_path: str, extra_args: list) -> None:
         sys.exit(1)
 
     print("New Claude Code session launched.")
+    append_launch_log(project_path, tab_title)
 
 
 def main():

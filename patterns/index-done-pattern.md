@@ -1,6 +1,6 @@
 # Pattern: INDEX done
 
-An INDEX plan summarizes and tracks child plans. When all children are settled, the INDEX session **closes the parent** with a summary table — no new code needed.
+An INDEX plan summarizes and tracks child plans. When all children are settled, the INDEX session **closes the parent** — by renaming its plan MD to `_done` — with a summary table, no new code needed.
 
 ## When to use
 
@@ -30,10 +30,10 @@ A Wave includes the INDEX as a session target. That session:
 2. Confirms each child's final status (`done` / `cancelled` / `blocked`)
 3. Writes a **completion summary table** in the INDEX MD
 4. Writes a **residual issues list** (anything not done at the INDEX level, often deployment / E2E testing)
-5. Closes the INDEX MD as `done`
+5. Closes the INDEX by `git mv`-ing its plan MD to `<id>-<slug>_done.md` and committing `chore(plan-<id>): mark done`
 6. Updates `_progress.md`
 
-**No new code.** The session reads, summarizes, closes. ~30 min of work.
+**No new code.** The session reads, summarizes, closes. ~30 min of work. The work is committed only — push / PR / merge stay with the user.
 
 ## The summary table format
 
@@ -44,13 +44,13 @@ In the INDEX MD, add a section like:
 
 | Child ID | Title | Status | Commit | Branch | Notes |
 |---|---|---|---|---|---|
-| X1 | ... | done | abc1234 | plan/X1 | ... |
-| X2 | ... | done | def5678 | plan/X2 | ... |
-| X3 | ... | cancelled | — | — | obsoleted by Y |
-| X4 | ... | blocked | hij9012 | plan/X4 | external dep on Z |
+| corp-701 | ... | done | abc1234 | plan/corp-701 | ... |
+| corp-702 | ... | done | def5678 | plan/corp-702 | ... |
+| corp-703 | ... | cancelled | — | — | obsoleted by corp-705 |
+| corp-704 | ... | blocked | hij9012 | plan/corp-704 | external dep on vendor |
 ```
 
-The table is the **audit trail** for the INDEX's closure.
+The table is the **audit trail** for the INDEX's closure. A `done` row corresponds to a child whose plan MD has been renamed to `<id>-<slug>_done.md`; `cancelled` / `blocked` rows stay as `## Status` edits in the child plan MD (no rename).
 
 ## The residual issues list
 
@@ -76,7 +76,7 @@ This is **not** new work — it's documenting known gaps so future readers don't
 | **Strict done** | All children `done` | Pure case |
 | **Done with cancels** | All children `done`/`cancelled`, none blocked | Common — explain cancels |
 | **Done with externals** | Some children `blocked` on external dependencies | INDEX still closes — record what's external |
-| **Partial close (ready)** | Most children done, one or two still in progress | INDEX stays `ready`, closes later |
+| **Partial close (ready)** | Most children done, one or two still in progress | INDEX MD stays un-renamed (Status `ready`); rename to `_done` later |
 
 The "Done with externals" case is important: don't keep an INDEX open forever waiting for an external dependency. Close it with the dependency noted, and the dependency becomes a separately-tracked item.
 
@@ -85,18 +85,18 @@ The "Done with externals" case is important: don't keep an INDEX open forever wa
 Our engagement closed 7 INDEX plans this way in rapid sequence:
 
 ```
-INDEX 750 (corp_org AI integration)         — closed first, set the template
-INDEX 800 (devtools observability)
-INDEX 810 (HTTP replay)
-INDEX 830 (project Write completion)
-INDEX 820 (documentation)
-INDEX 500 (universal reception service)
-INDEX 600 (service completion)
+INDEX corp-700  (corp_org AI integration)       — closed first, set the template
+INDEX devtools-800 (devtools observability)
+INDEX devtools-810 (HTTP replay)
+INDEX api-830   (project Write completion)
+INDEX docs-820  (documentation)
+INDEX intake-500 (universal reception service)
+INDEX intake-600 (service completion)
 ```
 
 Each followed the same pattern: read children, write summary table, write residual issues, close. The first one took ~45 minutes; later ones were faster because the format was established.
 
-The session for INDEX 600 introduced a useful variant: **child plan 603 was blocked** on an external dependency (waiting for a vendor to approve regulatory paperwork). Rather than keep INDEX 600 open indefinitely, the session closed it with "completion criteria met for design/implementation; external dependency tracked separately."
+The session for INDEX `intake-600` introduced a useful variant: **child plan `intake-603` was blocked** on an external dependency (waiting for a vendor to approve regulatory paperwork). Rather than keep INDEX `intake-600` open indefinitely, the session closed it with "completion criteria met for design/implementation; external dependency tracked separately."
 
 ## Why this is a "pattern" not just "common sense"
 

@@ -83,18 +83,20 @@ The orchestrator's first response after reading the bootstrap will typically be 
 
 For each plan in a Wave, the orchestrator runs:
 
-1. `git worktree add .worktrees/<id> -b plan/<id> origin/main` — isolated workspace
+1. `git worktree add .worktrees/<area>-<NNN> -b plan/<area>-<NNN> integration/latest-known-good` — isolated workspace (base on `origin/main` only for Wave 1)
 2. Copies the plan MD + `INSTRUCTIONS.md` + `_progress.md` into the worktree
 3. `python launch_claude.py <worktree-path> "<starter prompt>"` — opens a new terminal with a dedicated Claude Code session
 
-The "starter prompt" given to each session tells *it* (the main session, not the orchestrator) things like:
+The "starter prompt" given to each session tells *it* (the session master, not the orchestrator) things like:
 
-- "You are a dedicated session for plan {ID}"
-- "Your worktree is .worktrees/{ID}/, your branch is plan/{ID}"
+- "You are a dedicated session for plan {area}-{NNN}" (e.g. `auth-001`)
+- "Your worktree is .worktrees/{area}-{NNN}/, your branch is plan/{area}-{NNN}"
 - "First read these files: INSTRUCTIONS.md, your plan MD, _progress.md"
-- "You may talk to the user directly, commit, push, open PRs"
-- "Don't edit other worktrees, don't push to main"
+- "You may talk to the user directly and **commit** — that's the end of your responsibility"
+- "Don't push, don't open PRs, don't merge to main (all the user's call); don't edit other worktrees"
 - Plan-specific context (1-2 sentences)
+
+A session master's landing authority stops at `commit`. push / PR / merge to main are all left to the user. (Deploying from the worktree for verification only is allowed.) When a plan is done, the session **renames its file to `<id>-<slug>_done.md`** rather than flipping a Status field.
 
 See [`templates/starter-prompt-template.md`](templates/starter-prompt-template.md) for the full template with variants for batch sessions, audit sessions, and INDEX-closing sessions.
 
@@ -104,11 +106,12 @@ The orchestrator runs the steps below for each plan in a Wave. Shown here for tr
 
 ```bash
 # For each plan ID in this wave (e.g. 10 of them):
-PLAN_ID=123                                              # the plan you're launching
-PLAN_FILE=$(ls .claude/plans/${PLAN_ID}_*.md | head -1)  # find the matching plan MD
+PLAN_ID=auth-001                                         # the plan you're launching (area-NNN)
+PLAN_FILE=$(ls .claude/plans/${PLAN_ID}-*.md | head -1)  # find the matching plan MD
 
-# 1. Create an isolated worktree on a fresh branch off main
-git worktree add .worktrees/${PLAN_ID} -b plan/${PLAN_ID} origin/main
+# 1. Create an isolated worktree on a fresh branch off the integration branch
+#    (use origin/main only on Wave 1, before integration/latest-known-good exists)
+git worktree add .worktrees/${PLAN_ID} -b plan/${PLAN_ID} integration/latest-known-good
 
 # 2. Copy the plan MD and shared files into the worktree
 mkdir -p .worktrees/${PLAN_ID}/.claude/plans
@@ -125,7 +128,7 @@ python launch_claude.py .worktrees/${PLAN_ID} "${STARTER}"
 
 (Save your minimal starter prompt as `templates/starter-prompt-minimal.txt` — see [templates/starter-prompt-template.md](templates/starter-prompt-template.md) for variants.)
 
-Sessions are independent. Each one talks to the user directly, commits / pushes when ready, and updates its row in `_progress.md`.
+Sessions are independent. Each one talks to the user directly, commits when ready (it does **not** push — that's the user's call), and updates its row in `_progress.md`.
 
 The **orchestrator session** (the one you started this from) collects summaries, refreshes the master `_progress.md`, and decides what goes in the next Wave.
 
@@ -133,13 +136,17 @@ The **orchestrator session** (the one you started this from) collects summaries,
 
 **[Wave strategy](patterns/wave-strategy.md)** — Don't launch all 100 sessions at once. Launch 10. Wait for completion. Use what you learned to plan the next 10.
 
-**[Batch sessions](patterns/batch-sessions.md)** — When you have 10+ trivially-similar plans (e.g. "draft v2 plans, are these still relevant?"), one session can judge all of them. We retired 50+ plans this way.
+**[Batch sessions](patterns/batch-sessions.md)** — When you have 10+ trivially-similar plans (e.g. "draft v2 plans, are these still relevant?"), one session can judge all of them. These are orchestration-meta work, so they use the `meta-` area prefix (e.g. `meta-001`). We retired 50+ plans this way.
 
 **[Implicit done detection](patterns/implicit-done-detection.md)** — Many plans labeled "TODO" are already finished by past commits. A Wave session whose only job is to verify this is faster than re-implementing.
 
 **[INDEX done pattern](patterns/index-done-pattern.md)** — Once an INDEX plan's children are all done, the INDEX session writes a summary table and closes — no new code. We did this 7 times in a row.
 
-**[Main merge strategy](patterns/main-merge-strategy.md)** — When you have 90 orphan `plan/<id>` branches, don't merge them naively. Find or create a single "integration branch" that already harmonizes the conflicts. We used a `plan/999b` branch with 366/366 tests passing as the merge starting point.
+**[Main merge strategy](patterns/main-merge-strategy.md)** — When you have 90 orphan `plan/<id>` branches, don't merge them naively. Find or create a single "integration branch" that already harmonizes the conflicts. We used a `plan/999b` branch with 366/366 tests passing as the merge starting point. Also covers **between-Wave integration** — merging each Wave forward so the next isn't based on stale `main`.
+
+**[Test Waves](patterns/test-waves.md)** — Interleave a verification-only Wave every ~3 build Waves so test debt stays bounded instead of detonating at deploy time.
+
+**[Session monitoring](patterns/session-monitoring.md)** — Lightweight liveness tracking: a `last_activity` heartbeat plus `git log --all --since=1h` so stalled or dead sessions surface without polling.
 
 ## When NOT to use this method
 

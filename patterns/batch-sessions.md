@@ -15,11 +15,11 @@ Examples we used:
 
 | Batch ID | Scope | Items | Outcome |
 |---|---|---|---|
-| `999` | v2-era draft plans, are they still relevant? | 11 | 2 done, 9 cancelled |
-| `999b` | Test failures from past plans not merged | 23 failing tests | All passing on integration branch |
-| `999c` | v2-era "ready" plans | 3 | 2 done, 1 maintained as ready |
-| `999d` | Chrome extension actions | 9 | All "implicit done" |
-| `999e` | Final audit — anything still uncategorized? | All plans | 0 missed |
+| `meta-001` | v2-era draft plans, are they still relevant? | 11 | 2 done, 9 cancelled |
+| `meta-002` | Test failures from past plans not merged | 23 failing tests | All passing on integration branch |
+| `meta-003` | v2-era "ready" plans | 3 | 2 done, 1 maintained as ready |
+| `meta-004` | Chrome extension actions | 9 | All "implicit done" |
+| `meta-005` | Final audit — anything still uncategorized? | All plans | 0 missed |
 
 5 batch sessions retired **~50 items** efficiently.
 
@@ -73,7 +73,7 @@ worktree 内に {N} 件の plan MD がコピー済。
 
 判定根拠を必ず各 plan MD の実行ログに残す。終了時に _progress.md の該当行を更新。
 
-PR/push: chore のため PR 不要・push 推奨。
+成果は commit のみ（push / PR / merge はユーザー判断）。done にした plan は `<id>-<slug>_done.md` にリネーム。
 ```
 
 ## Risk: batch sessions can produce shallow verdicts
@@ -95,26 +95,26 @@ In our case:
 
 ~10x speedup for low-complexity decisions. The right tool for "yes/no/why" judgments.
 
-## Real example: the `999` family
+## Real example: the `meta-` family
 
-We named the batch sessions `999`, `999b`, `999c`, `999d`, `999e` to mark them as orchestration-meta, not project work.
+We named the batch sessions `meta-001` through `meta-005` to mark them as orchestration-meta, not project work.
 
 ```
-plan 999  — v2 draft plans batch        (Wave 6)
-plan 999b — test failure recovery batch (Wave 7) — integrated multiple fix branches
-plan 999c — v2 ready plans batch        (Wave 9)
-plan 999d — Chrome extension actions    (Wave 10)
-plan 999e — final audit                 (Wave 11)
+plan meta-001 — v2 draft plans batch        (Wave 6)
+plan meta-002 — test failure recovery batch (Wave 7) — integrated multiple fix branches
+plan meta-003 — v2 ready plans batch        (Wave 9)
+plan meta-004 — Chrome extension actions    (Wave 10)
+plan meta-005 — final audit                 (Wave 11)
 ```
 
-Convention: a high-numbered prefix (`9xx` here) is reserved for orchestration meta-plans. Project plans live in lower number ranges. This kept project plan IDs uncluttered.
+Convention: orchestration-meta plans use the `meta-` area prefix; project plans use domain areas like `auth` / `billing` / `ui`. Systems are never distinguished by number band — the area prefix carries that meaning, which keeps project plan IDs self-describing.
 
 ## Variants
 
 ### "Audit" batch
 Read-only verdicts (no code change). Useful for "what's actually done?" at any point in the operation.
 
-### "Recovery" batch (like `999b`)
+### "Recovery" batch (like `meta-002`)
 Pull in commits/fixes from multiple non-merged branches, resolve conflicts, produce one ready-to-merge branch.
 
 ### "Sweep" batch
