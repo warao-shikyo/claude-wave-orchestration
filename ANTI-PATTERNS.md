@@ -126,6 +126,8 @@ The templates in this repo are designed to support either layout — see [templa
 
 In practice we still drifted. Discipline is hard. Acknowledge it and move on if it happens — but try.
 
+**v2 follow-up — the "consultant" drift**: a later operation drifted the other way: the user started asking the orchestrator for comparisons, cost research, test proposals and "what should we do?", and the orchestrator answered (spawning research subagents, drafting plans). The patrol loop slipped and several execution requests from sessions sat unnoticed. The user's diagnosis: *"once you proposed the tests and I started relying on you for that, it broke."* Rule now: questions of the form compare / research / propose / "how should we" go to a **planner** session (write the gist to the inbox, reply in one line "handed to the planner"). The orchestrator only does launching, integration, deploy, pre-production checks, and running sessions' execution requests (#17).
+
 ## 10. "Comprehensive testing" was deferred without a date
 
 **What happened**: Almost every session ended with "real E2E testing is out of scope; that's for a separate test phase." After 122 plans, we had no test phase scheduled and a massive testing backlog.
@@ -290,6 +292,31 @@ The user is the bridge between sessions and the orchestrator. To keep the orches
 5. **Do ask the orchestrator "what should be in the next Wave?"** — that's high-value orchestrator reasoning, worth the context.
 
 This is collaborative discipline: the user does the reading, the orchestrator does the tracking, and the two pieces of context stay separate.
+
+## 17. Sessions couldn't run privileged commands, and their requests got lost
+
+**What happened**: Sessions ran in a restricted permission mode, so reading production data, using API keys and calling paid external APIs were denied. The orchestrator (running with broader permissions) ended up running those commands for them via a subagent — but this was never written down as a procedure. Requests were scattered across the plan branch's inbox, the main inbox, and uncommitted inbox edits in worktrees, and some were missed for hours. One request claimed "user approved" without saying where.
+
+**Recommendation**:
+- Make "execution requests" a formal channel: the session appends `## [<id> → orchestrator] execution request` to the inbox with the exact command, count, cost estimate, output location (e.g. the worktree's git-ignored `out/`), and where the user approved it — and commits it.
+- The orchestrator checks **all three places** every patrol: each plan branch's inbox, the main inbox, and each worktree's uncommitted inbox diff. Also pick up every branch's `mark done` commit on each patrol, not only the ones that sent a notification.
+- "User approved" must name the chat and time; if it can't be confirmed, ask the user before spending money or touching production. Writes to production stay behind the dry-run → approval gate.
+- Put the list of denied operations and the request format into each session's starter context, so sessions ask instead of improvising workarounds.
+
+## 18. Cross-session messages silently expired
+
+**What happened**: The orchestrator sent messages to sessions with cross-session messaging. Because the two sides ran in different permission modes, each message waited for approval on the receiving side and expired unseen; the sender saw success. When the user copy-pasted a message into the other session with its wrapper tags intact, it was dropped as well.
+
+**Recommendation**:
+- Treat direct messages as a "wake up" hint only. The content of record goes into the inbox **and is committed**.
+- The only reliable paths are: inbox commit, or the user pasting the plain body text (without wrapper tags).
+
+## 19. Small operational traps around cost, integration and tests
+
+- **Killing by PID number alone**: a PID recorded earlier had been reused by an unrelated process; it was nearly killed. Stop budget overruns by not starting the remaining work; when you must stop a running process, re-check its command line right before killing it.
+- **Merging during a deploy**: if the deploy uploads the local working tree, merging into main mid-deploy ships a half-integrated state. Wait for the deploy to finish.
+- **Shared version numbers collided**: two plans each bumped the same shared template version N→N+1. Picking one side silently drops the other. Combine both and bump to a new version.
+- **A test run that ran nothing**: passing non-test files or nonexistent paths to the test wrapper ended "successfully" with zero tests. Always read the passed count.
 
 ---
 
