@@ -36,6 +36,7 @@ This method addresses all of the above by **horizontally scaling sessions** and 
 | [`patterns/`](patterns/) | Composable patterns (Wave, batch, INDEX, merge, implicit-done) |
 | [`templates/`](templates/) | Drop-in templates (INSTRUCTIONS.md, STARTER.md, plan MD, _progress.md, starter prompt, orchestrator bootstrap) |
 | [`scripts/launch_claude.py`](scripts/launch_claude.py) | Standalone session launcher (Windows Terminal; iTerm2 / tmux minimal) with role-based tab names and colors |
+| [`scripts/collect_fix_inputs.py`](scripts/collect_fix_inputs.py) | Collects new fix seeds (failed verify, open backlog lines, full-suite failures) for a scheduled planner run; used via the launcher's `--prompt-script` |
 | [`examples/case-study-anonymized.md`](examples/case-study-anonymized.md) | Anonymized walkthrough of the original engagement |
 
 ## Quick start (5 min)

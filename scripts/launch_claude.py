@@ -22,6 +22,14 @@ Windows + Windows Terminal (`wt`) 向け。macOS（iTerm2）・tmux にも最低
         `--remote-control <タブ名>` を付けない（Remote Control を使わない環境向け）。
     --dry-run
         起動せず、実行するコマンドとタブ名を表示するだけ。
+    --prompt-script <script.py>
+        起動の直前に `python <script.py> <プロジェクトパス>` を実行し、標準出力の 1 行を
+        起動プロンプト（最後の引数）の末尾に空白区切りで付け足す。定時改修プランナーが
+        「前回からの差分」の入力ファイルを渡すのに使う（scripts/collect_fix_inputs.py）。
+        - 出力が空 → 差分なしとして起動しない（終了コード 0）
+        - 非 0 終了 → 起動しない（スクリプトの終了コードを返す）
+        - 2 行以上・`;` を含む出力 → エラー（wt はプロンプト中の `;` をコマンド区切りとみなす）
+        --dry-run と併用すると、スクリプトにも --dry-run を渡す（状態を書かせない）。
 
 タブ名 = Remote Control 名 = `--name` = `<役割頭文字>:<プロジェクト名>[/<plan-id>] <任務要約>`
     例: M:myapp/auth-001 OAuthログイン追加
@@ -34,6 +42,8 @@ Windows + Windows Terminal (`wt`) 向け。macOS（iTerm2）・tmux にも最低
         --effort medium "/loop /session-orchestrator バックログ消化"
     python launch_claude.py ../myapp --role planner --task "請求の二重送信" \\
         "/session-planner 請求画面で二重送信が起きる"
+    python launch_claude.py ../myapp --role planner --task "定時改修" \\
+        --prompt-script scripts/collect_fix_inputs.py "/session-planner 定時改修:"
     MSYS_NO_PATHCONV=1 python launch_claude.py "$(pwd -W)/.worktrees/auth-001" --role master \\
         --plan-id auth-001 --task "OAuthログイン追加" \\
         "/session-master auth-001（.claude/plans/STARTER.md を読んで開始）"
@@ -85,7 +95,7 @@ ROLES = {
 # 任務要約の最大表示幅（全角1字=2、半角1字=1 で数える。30 = 全角15字）
 TASK_MAX_WIDTH = 30
 
-LAUNCHER_FLAGS_WITH_VALUE = ("--role", "--task", "--plan-id")
+LAUNCHER_FLAGS_WITH_VALUE = ("--role", "--task", "--plan-id", "--prompt-script")
 LAUNCHER_FLAGS_BOOL = ("--bg", "--dry-run", "--no-remote-control")
 
 MCP_APPROVAL_LIST_KEYS = ("enabledMcpjsonServers", "disabledMcpjsonServers")
@@ -111,7 +121,8 @@ def usage_text():
     return (
         "使い方: python launch_claude.py <プロジェクトパス> "
         "[--role orchestrator|master|planner|single] [--task \"<任務要約>\"] "
-        "[--plan-id <id>] [--bg] [--no-remote-control] [--dry-run] [claude に渡す引数...]\n"
+        "[--plan-id <id>] [--bg] [--no-remote-control] [--dry-run] [--prompt-script <script.py>] "
+        "[claude に渡す引数...]\n"
         "例: python launch_claude.py .worktrees/auth-001 --role master --task \"OAuthログイン追加\" "
         "\"/session-master auth-001（.claude/plans/STARTER.md を読んで開始）\""
     )
@@ -123,7 +134,7 @@ def split_launcher_args(argv):
     argparse を使わないのは、claude に渡す引数（--effort medium や "/loop ..." の
     プロンプト）の順序と中身をそのまま保つため。
     """
-    opts = {"role": None, "task": None, "plan_id": None,
+    opts = {"role": None, "task": None, "plan_id": None, "prompt_script": None,
             "bg": False, "dry_run": False, "no_remote_control": False}
     rest = []
     i = 0
@@ -394,6 +405,39 @@ def launch_iterm(resolved, title, claude_cmd, claude_args, env):
     subprocess.run(["osascript", "-e", osascript], env=env, check=True)
 
 
+class PromptScriptFailed(Exception):
+    """--prompt-script が非 0 で終了した。"""
+
+    def __init__(self, returncode):
+        super().__init__(f"--prompt-script が終了コード {returncode} で失敗しました")
+        self.returncode = returncode
+
+
+def run_prompt_script(script, resolved, dry_run):
+    """--prompt-script を実行し、プロンプトに付け足す 1 行を返す。
+
+    差分なし（出力が空）なら None を返す。非 0 終了は PromptScriptFailed で伝える。
+    """
+    script_path = Path(script).resolve()
+    if not script_path.is_file():
+        raise UsageError(f"--prompt-script のファイルが見つかりません: {script}（相対パスは cwd 基準）")
+    cmd = [sys.executable, str(script_path), resolved]
+    if dry_run:
+        cmd.append("--dry-run")
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", env=env)
+    if result.stderr:
+        print(result.stderr.rstrip("\n"), file=sys.stderr)
+    if result.returncode != 0:
+        raise PromptScriptFailed(result.returncode)
+    out = result.stdout.strip()
+    if not out:
+        return None
+    if "\n" in out or ";" in out:
+        raise UsageError(f"--prompt-script の出力は ; を含まない 1 行にしてください: {out!r}")
+    return out
+
+
 def append_launch_log(resolved, title, role, plan_id, mode):
     """起動記録を JSONL に 1 行追記する。
 
@@ -437,6 +481,23 @@ def main(argv=None):
         return 1
     project_path = project_path.resolve()
     resolved = str(project_path)
+
+    if opts["prompt_script"] is not None:
+        if not extra_args or extra_args[-1].startswith("-"):
+            print("エラー: --prompt-script を使うときは起動プロンプトを最後の引数に置いてください")
+            return 1
+        try:
+            suffix = run_prompt_script(opts["prompt_script"], resolved, opts["dry_run"])
+        except UsageError as e:
+            print(f"エラー: {e}")
+            return 1
+        except PromptScriptFailed as e:
+            print(f"エラー: {e}。起動しません")
+            return e.returncode
+        if suffix is None:
+            print("--prompt-script: 差分なし。起動しません")
+            return 0
+        extra_args = [*extra_args[:-1], f"{extra_args[-1]} {suffix}"]
 
     role = opts["role"]
     if role is None and opts["task"] is not None:
