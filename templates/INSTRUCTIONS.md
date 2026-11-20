@@ -1,18 +1,20 @@
 # Plan operation rules
 
-Drop this into your project's plans folder (e.g. `.claude/plans/INSTRUCTIONS.md`). Every session reads this on launch.
+Drop this into your project's plans folder (e.g. `.claude/plans/INSTRUCTIONS.md`) and commit it to the base branch, so every worktree gets it through `git worktree add`. Every session reads this on launch.
 
-This file matches the **session-orchestrator** / **session-master** skills. Where the two differ, the skills win.
+This file matches the **session-planner** / **session-orchestrator** / **session-master** skills. Where they differ, the skills win.
 
 ## Vocabulary
 
 - **plan**: a Markdown file describing one piece of work (`<area>-<NNN>-<slug>.md`)
 - **area**: a lowercase domain word that prefixes the plan id (`auth`, `billing`, `ui`, `api`, `infra`, `docs`, …). The `meta-` area is reserved for orchestration-meta plans.
-- **status**: where the plan is in its lifecycle (see below)
 - **wave**: a batch of plans being worked on in parallel
 - **worktree**: an isolated working directory for one plan (`.worktrees/<area>-<NNN>/`)
-- **orchestrator**: the session coordinating all the others; runs in the main project directory
-- **session master**: a session launched by the orchestrator to work one plan in its own worktree
+- **planner**: a session that investigates a raw problem with the user and files plan MDs as `ready`. Writes no code, launches nothing.
+- **orchestrator**: the session coordinating all the others; runs in the main project directory. Launches masters, integrates, deploys, verifies.
+- **session master**: a session launched by the orchestrator to work one plan in its own worktree, up to `commit`
+- **inbox**: `.claude/plans/inbox.md`, the append-only report log sessions write to and the orchestrator reads
+- **STARTER.md**: the per-plan mission brief the orchestrator writes into the worktree before launch
 
 ## Naming convention (area-prefix scheme)
 
@@ -23,28 +25,56 @@ This file matches the **session-orchestrator** / **session-master** skills. Wher
 | branch | `plan/<area>-<NNN>` | `plan/auth-001` |
 | worktree | `.worktrees/<area>-<NNN>/` | `.worktrees/auth-001/` |
 | commit | `<type>(plan-<area>-<NNN>): …` | `feat(plan-auth-001): …` |
-| docs spec | `docs/specs/<area>-<NNN>-<slug>.md` | |
+| done archive | `docs/specs/<area>-<NNN>-<slug>_done.md` | where the orchestrator `git mv`s a done plan |
 
 - `area` is a lowercase word for the system/domain. **Do not distinguish systems by number band** — humans can't memorize "the 500s are billing." Use the area prefix instead.
+- `<NNN>` is the next unused number within the area (numbers of done plans are used up too).
 - The `meta-` area is for orchestration-meta plans only (e.g. `meta-001-wave3-planning.md`).
 - Define the project's area list at the top of `_progress.md`.
 
-## Plan status lifecycle
+## Where things live
 
-```
-draft → ready → in_progress → done | cancelled | blocked
-```
-
-| Status | Meaning | How it's expressed |
+| File | Who writes it | Notes |
 |---|---|---|
-| `draft` | Just created, not ready for execution | `## Status` line |
-| `ready` | Worktree-ready, awaiting session launch | `## Status` line |
-| `in_progress` | Session active, working the plan | `## Status` line |
-| `done` | Plan complete | **rename the file to `<id>-<slug>_done.md`** |
-| `cancelled` | Plan no longer relevant (reason required) | `## Status` line + reason in execution log |
-| `blocked` | Stuck on external dependency (reason required) | `## Status` line + reason in execution log |
+| `.claude/plans/<id>-*.md` | planner creates; master updates its own | `.claude/plans/` holds **only plans not yet done**. Done plans are moved to `docs/specs/` by the orchestrator. |
+| `.claude/plans/_progress.md` | **orchestrator only** (on main) | worktree copies are read-only snapshots; masters only stamp their own row |
+| `.claude/plans/inbox.md` | sessions **append** + commit | never overwrite or truncate — other sessions' reports live there too |
+| `.claude/plans/_backlog.md` | orchestrator | `Candidate plans`: new-issues / residual / memory candidates |
+| `.claude/plans/addenda/<id>-<YYYYMMDD-HHMM>.md` | planner | extra specs for a plan that is already running |
+| `.claude/verify/<YYYYMMDD-HHMM>-<sha>.md` | orchestrator | verify result of one deploy (not a plan, so not in `plans/`) |
+| `docs/specs/` | orchestrator | archive of done plans — a dumping ground, not reading material. The source of truth is the `mark done` commit in git history. |
 
-**Done is expressed by the filename, not the Status line.** When a plan is complete, `git mv` it to `<id>-<slug>_done.md` and commit it. `cancelled` / `blocked` stay as `## Status` edits with a recorded reason (they are not renamed).
+## Plan status and lifecycle
+
+A plan MD's `## Status` line holds one of:
+
+| Status | Meaning |
+|---|---|
+| `draft` | Not settled yet — the orchestrator does not launch it |
+| `ready` | "OK to launch" — the orchestrator may put it in a Wave (after user approval) |
+| `cancelled` | No longer relevant (reason required in the execution log) |
+| `blocked` | Stuck on an external dependency (reason required) |
+
+**Done is expressed by the filename, not the Status line.** When a plan is complete, `git mv` it to `<id>-<slug>_done.md` and commit `chore(plan-<id>): mark done`. That commit is the source of truth for "done", and done is terminal: never rename it back, never relaunch it.
+
+Beyond done, the orchestrator tracks the plan in `_progress.md`:
+
+```
+ready → implementing → done → merged → deployed → verified
+  ▲                                         │ problem found
+  └── planner (fix mode) files a fix plan ◀─┘   (original plan stops at verify-failed)
+```
+
+| state | What makes it true |
+|---|---|
+| `ready` | plan MD with `Status: ready`, no `plan/<id>` branch yet |
+| `implementing` | `plan/<id>` exists, no `mark done` in `main..plan/<id>` (includes `blocked` / `waiting-user`) |
+| `done` | `main..plan/<id>` contains `chore(plan-<id>): mark done` |
+| `merged` | `git merge-base --is-ancestor plan/<id> main` |
+| `deployed` | a `deploy: <date> main@<sha> <measured>` record in `_progress.md` whose sha contains the plan |
+| `verified` / `verify-failed` | the verify after that deploy passed / failed |
+
+User approval is required for: launching a new Wave or the next plan (`ready → implementing`), merge (`done → merged`), and deploy (`merged → deployed`).
 
 ## Plan MD structure
 
@@ -54,41 +84,25 @@ Each plan MD must include:
 # {area}-{NNN}-{slug} — {Title}
 
 ## Status
-{draft|ready|in_progress|cancelled|blocked}
+{draft|ready|cancelled|blocked}
 <!-- done is expressed by renaming the file to ..._done.md, not here -->
 
 ## Purpose
-Why this plan exists. Plain prose.
-
 ## Background
-Context. What's the situation that requires this.
-
 ## Scope
-What's in scope.
-
 ## Out of scope
-What's NOT in scope (important — sets boundaries).
 
 ## Completion criteria
-Objective tests that say "this plan is done":
 - [ ] criterion 1
-- [ ] criterion 2
 - [ ] existing test suite still green (no regression)
-- [ ] verified manner: <unit | integration | manual | NOT VERIFIED — deferred to test Wave>
+- [ ] verified manner: <unit | integration | manual | NOT VERIFIED — deferred>
 
-The `verified manner` line is mandatory and must be honest. Shipping
-`NOT VERIFIED — deferred to test Wave` is allowed; silently claiming "done"
-without verification is not. A later test Wave picks up the deferred items —
-see [test-waves.md](../patterns/test-waves.md).
-
+## Notes / risks / open questions
 ## Related
-Links to other plans, memory entries, docs.
-
 ## Execution log
-Append-only. Each entry: date + what happened.
 ```
 
-The execution log is **mandatory**. It's the audit trail.
+The `verified manner` line is mandatory and must be honest. Criteria that can only be checked after a deploy are **not** done-conditions for the master: write `→ verify (checked by the orchestrator after deploy)` and put the check into the inbox `verify:` line. The execution log is **mandatory** (append-only audit trail).
 
 ## Landing responsibility for session masters
 
@@ -98,32 +112,30 @@ A session master carries one plan from launch to a terminal state **and commits 
 |---|---|
 | Implement the plan | ✅ on its own judgment |
 | Ask the user directly | ✅ |
-| **commit** (to `plan/<id>`) | ✅ **this is the end of its responsibility** |
-| **push** | ❌ forbidden (user's call) |
-| **open a PR** | ❌ forbidden (user's call) |
-| **merge to main** | ❌ forbidden (user's call) |
-| deploy (for verification) | ⚠️ from the worktree, on its own judgment, if needed (see below) |
+| **commit** (to `plan/<id>`) | ✅ **the core of its responsibility** |
+| docs updates for this change, tidy temp files in the worktree | ✅ commit to `plan/<id>` |
+| **push** / **open a PR** / **merge to main** | ❌ not its job |
+| **deploy** / post-deploy checks on real environments | ❌ not its job — the orchestrator's step (write them as `verify:`) |
 | edit another worktree | ❌ forbidden |
+| remove the worktree directory, file into the shared backlog | ❌ orchestrator side |
 
-**Why commit-only**: if each master pushes / merges on its own, code rolls back when branches collide. Push / merge / production rollout are **all left to the user (the master themself)**. Your output stays as commits on the `plan/<id>` local branch.
+**Why**: if each master pushes / merges on its own, code rolls back when branches collide. And many deploys sync the **working tree** to production — a deploy from a worktree silently drops every other session's work that isn't in that branch. The master doesn't know whether its branch contains the latest main; only the orchestrator does.
 
-A session master also:
+So a master does not try these, and does not report "I couldn't deploy" or go `blocked` waiting for a deploy. It writes what to check after deploy in `verify:` and declares done.
 
-- **Owns its plan** from start to terminal state (`done`/`cancelled`/`blocked`)
-- **Updates its own plan MD** (status + execution log)
-- **Updates its own row in `_progress.md`** (in the worktree copy), stamping `last_activity` (HH:MM) at checkpoints — start, after each commit, when asking the user a blocking question, and at completion (see [session-monitoring.md](../patterns/session-monitoring.md))
-- **Reports deploy status** honestly: `none` (committed, not deployed), `verified-on-deploy` (deployed only to verify), or `live`. Don't claim something runs in production just because the code exists in a branch (see [ANTI-PATTERNS.md #11](../ANTI-PATTERNS.md#11-we-didnt-establish-whats-the-production-reality-baseline))
+When the work needs a privileged operation the session's permission mode denies (reading production, using API keys, paid external APIs), it files an **execution request** in the inbox (format in STARTER.md) — never improvises a workaround.
 
-A session master must NOT:
+## Progress logging
 
-- **push, open PRs, or merge to main** (all user decisions)
-- **Edit other plans' worktrees**
-- **Touch `.gitignore` to remove `.worktrees/`** (we want worktrees ignored)
-- **Make scope decisions outside its plan** (escalate to user or note as "out of scope")
+- At each **checkpoint** — a commit, verifying one completion criterion, asking the user a question, stopping — append **one line** to the execution log ("when / what / which commit") and stamp `last_activity` (HH:MM) on your row of the `_progress.md` snapshot. No line-by-line narration (it burns tokens).
+- If you need the user's judgment and they are away, set your row to `status: waiting-user`. The orchestrator tells the user where to look; it doesn't relay the question.
 
-### Deploy (only when verification needs it)
+## Tests (all parallel sessions)
 
-If verifying the work requires a deploy, you **may deploy from the worktree on your own judgment** (follow the project's deploy procedure). This is for verification only and is separate from git push / merge. Record the result honestly in the completion summary's `deploy:` field (`none` / `verified-on-deploy` / `live`).
+- Only **one** test run at a time across all sessions. Use the project's exclusive test wrapper if it has one; don't call the raw test command. Parallel test runs have frozen the user's machine.
+- **No full-suite runs from sessions.** Make the suites that cover what you touched green, once, right before completion. During implementation, one target file is usually enough.
+- The full suite runs on a schedule (e.g. nightly, once a day), not per session and not per deploy.
+- Always read the passed count: a run that collected zero tests is not green.
 
 ## commit convention
 
@@ -135,7 +147,7 @@ If verifying the work requires a deploy, you **may deploy from the worktree on y
 
 If your plan depends on another plan that's not yet done:
 
-1. Check if the other plan is in a `plan/<id>` branch — you can fetch and reference it
+1. Check if the other plan is in a `plan/<id>` branch — you can reference it
 2. If you're truly blocked, set status to `blocked` and record `blocked on plan-<id>` in the execution log
 3. The orchestrator will reassign or wait
 
@@ -151,86 +163,90 @@ The `.worktrees/` directory is in `.gitignore`. Do not commit it.
 
 ## Completion procedure
 
-When your plan's completion criteria are met:
+Before starting, check you aren't already done (`git log --oneline --grep "mark done"`). Then, when the completion criteria are met:
 
-1. Record the final result (evidence for done / commit hash) in the plan MD's execution log.
-2. **Rename the file to `_done`** and commit:
+1. Record the final result (evidence / commit hash) in the execution log.
+2. Tidy temp files in the worktree → commit.
+3. Update the docs related to this change → `docs(plan-<id>): …` commit.
+4. Write the full work report in the plan MD body (what changed, verification, new-issues, residual, memory written / memory candidates).
+5. **Append a short report to the inbox** and commit (format below).
+6. **Last**, rename to `_done` and commit — so "a mark-done commit exists" means "everything is finished":
    ```bash
    git mv .claude/plans/<id>-<slug>.md .claude/plans/<id>-<slug>_done.md
    git commit -m "chore(plan-<id>): mark done"
    ```
-3. Emit the **completion summary** (below). Include the key terminal output (test results, build output, etc.).
-4. **Always spell out new issues / residual work** — don't swallow them. The orchestrator files them into the backlog.
+7. Tell the user it's done (include the plan id; "this tab can be closed") and print a detailed summary in this session. This is not `waiting-user` — you can stop.
 
-### Completion summary format (two sections)
+### Inbox short report (append to `.claude/plans/inbox.md`)
 
 ```
-=== Detailed summary (for the user to read) ===
-[Can be long. The user reads it for situational awareness.
- Cover: what changed, verification, key terminal output (test/build),
- discoveries, new issues, residual work, out-of-scope notes.]
-
-=== Short summary (for the orchestrator — user pastes this) ===
-plan <id> → done|cancelled|blocked
+## [<id>] <HH:MM> done|cancelled|blocked
 commit: <hash> (push: no — commit is the end of responsibility)
 verified: unit|integration|manual|deferred
-deploy: none|verified-on-deploy|live
+deploy: none   ← masters don't deploy
+verify: <what to check after deploy: command / value / expected, or none>
 done-file: <id>-<slug>_done.md
+updated-docs: <0-3 lines>
+new-issues: <0-3 lines>
+residual: <0-3 lines>
+memory-written: <memory files written in this session, or none>
+memory-candidates: <facts you weren't sure were durable, for the user to decide, or none>
 key: <~30-char take-away>
-new-issues: <new issues, 0-3 lines>
-residual: <residual work, 0-3 lines>
 ```
 
-The user reads the detailed section themselves and pastes only the short section to the orchestrator.
+The orchestrator picks this up on its next patrol — **the user does not have to paste anything**. The detailed summary stays in the session's terminal output and the plan MD; the inbox gets only the short report (≤12 lines). New issues / residual work are mandatory raw material: the orchestrator files them into `_backlog.md`.
+
+## Memory
+
+Claude Code's auto memory is shared by all worktrees of the same repository. A master may write non-obvious, durable facts it learned (things neither the code nor the docs show) directly — at most 2, checking `MEMORY.md` for duplicates first — and lists them in `memory-written`. Facts it isn't sure are durable go in `memory-candidates` instead; the orchestrator files them into the backlog for the user to decide. Memory is machine-local.
+
+## Extra specs from the planner (addenda)
+
+The planner may put extra specs for a running plan in the main root's `.claude/plans/addenda/<id>-*.md`. After each commit, check for new ones; copy them into the end of your plan MD as `## Extra spec (<filename>)`, commit, then continue. If it has no "owner confirmed" line, contradicts committed work, or amounts to a different feature, ask the user first. Never take addenda into a done plan.
 
 ## When to call it `cancelled` instead of `done`
-
-You may judge `cancelled` when:
 
 - Plan's premise no longer holds (architecture shift, requirements changed)
 - Plan is duplicated by another plan with equivalent scope
 - Implementation cost is much higher than expected and value is unclear (escalate first, but cancellation is a valid outcome)
 
-Set `## Status` to `cancelled` and record the reason in the execution log. Do **not** rename to `_done`.
+Set `## Status` to `cancelled` and record the reason. Do **not** rename to `_done`.
 
 ## When to call it `blocked`
 
-You may judge `blocked` when:
-
-- Waiting on external party (vendor approval, partner integration)
-- Waiting on another plan that's been assigned to a different session
+- Waiting on an external party
+- Waiting on another plan that's assigned to a different session
 - Tool / environment issue you can't resolve
 
-Set status `blocked`, record what's blocking, and stop. Don't loop.
+Set status `blocked`, record what's blocking, and stop. Don't loop. (Waiting for a deploy is **not** a reason — see above.)
 
 ## Out-of-scope bugs
 
-Don't fix them yourself (unless they block your own plan). Record them in the execution log and write them up in the completion summary's `new-issues` field as a new-plan proposal. The orchestrator files them into the backlog.
+Don't fix them yourself (unless they block your own plan). Record them in the execution log and write them up as `new-issues`.
 
 ## Out of context before the plan is done
 
-Save your progress in the execution log, set status back to `ready` with a note on where you stopped, and stop. **Don't push** (your commits stay local). The orchestrator spawns a follow-up session.
+Save your progress in the execution log, set status back to `ready` with a note on where you stopped, and stop. **Don't push** (your commits stay local). The orchestrator launches a follow-up session. Only do this before done — never move a done plan back to `ready`.
 
 ## Notes about `_progress.md`
 
-- The master `_progress.md` lives in the orchestrator's working directory only
-- Each worktree gets a **read-only snapshot** at launch
-- You may edit the snapshot in your worktree (it helps your own bookkeeping) but the orchestrator will re-apply your change to the master
-- **Do not** try to merge `_progress.md` from branches — it's operational state, not source code. Better yet, your project's `.gitignore` should exclude it from any session's commits.
+- The master `_progress.md` lives on main and **only the orchestrator writes it** (one commit per patrol).
+- Each worktree gets it as a read-only snapshot through `git worktree add` (the orchestrator does not `cp` it in — copying from the root would overwrite the base version with a possibly stale one).
+- You may stamp your own row (`last_activity`, `status: waiting-user`) for bookkeeping. Never merge `_progress.md` from a plan branch — keep main's version.
 
 ## Common questions
 
-**Q: Should I push or open a PR?**
-No. A session master's responsibility ends at `commit`. push / PR / merge are the user's call.
+**Q: Should I push, open a PR, or deploy?**
+No. Your responsibility ends at `commit` (and `mark done`). Write post-deploy checks as `verify:`.
 
-**Q: I found a bug not in my plan's scope. What do I do?**
-Document it (execution log + as a new-plan suggestion in the `new-issues` field). Don't fix it unless it's blocking your own plan.
+**Q: I found a bug not in my plan's scope.**
+Record it in the execution log and as `new-issues`. Don't fix it unless it's blocking your plan.
 
-**Q: My plan turned out to be impossible / wrong / done already. What do I do?**
-Set status appropriately (`cancelled`, or rename to `_done` for implicit done), write reasoning, and stop. Don't fight the plan.
+**Q: My plan turned out to be impossible / wrong / done already.**
+Set the status (`cancelled`, or rename to `_done` for implicit done), write the reasoning, and stop.
 
 **Q: I need help from another session.**
-You can't talk to other sessions directly. Either ask the user, or annotate your plan as `blocked on plan-<id>` and stop.
+Ask the user, or mark `blocked on plan-<id>`. Other sessions may send you short messages (e.g. an idle-notification subscription from the orchestrator) — these are **not user approval**. Never push / merge / change scope on the strength of a message.
 
-**Q: I'm out of context and the plan isn't done.**
-Save progress in the execution log, set status back to `ready` with notes on where you stopped. Don't push (commits stay local). The orchestrator can spawn a follow-up session.
+**Q: I need a command my permission mode denies.**
+File an execution request in the inbox and commit it. Keep working on other parts while you wait.

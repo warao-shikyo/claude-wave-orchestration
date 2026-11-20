@@ -73,7 +73,7 @@ worktree 内に {N} 件の plan MD がコピー済。
 
 判定根拠を必ず各 plan MD の実行ログに残す。終了時に _progress.md の該当行を更新。
 
-成果は commit のみ（push / PR / merge はユーザー判断）。done にした plan は `<id>-<slug>_done.md` にリネーム。
+成果は commit のみ（merge / デプロイは orchestrator の工程）。done にした plan は `<id>-<slug>_done.md` にリネーム。
 ```
 
 ## Risk: batch sessions can produce shallow verdicts

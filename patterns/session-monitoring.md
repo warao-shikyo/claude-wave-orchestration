@@ -1,91 +1,76 @@
 # Pattern: Session monitoring
 
-In the original engagement we had **no way to see live session state** (see [ANTI-PATTERNS.md #5](../ANTI-PATTERNS.md#5-we-tracked-sessions-by-completion-summary-only)). The orchestrator only knew a session existed; whether it was working, waiting for user input, or silently dead was invisible until the user pasted a summary. This worked at ≤10 sessions in flight but is the first thing that breaks as you scale.
+In the original engagement we had **no way to see live session state** (see [ANTI-PATTERNS.md #5](../ANTI-PATTERNS.md#5-we-tracked-sessions-by-completion-summary-only)). The orchestrator only knew a session existed; whether it was working, waiting for user input, or silently dead was invisible until the user pasted a summary.
 
-This pattern adds **lightweight liveness tracking** without introducing a daemon or polling loop.
+This pattern combines four cheap signals so the orchestrator wakes **only when something changed**, and the user knows **which tab needs them**.
 
 ## The problem, concretely
 
-- A session gets stuck waiting for user input. The orchestrator doesn't know and starts planning the next Wave as if this one finished.
-- A session crashes (context exhaustion, terminal closed). No summary ever arrives. The row sits at `in_progress` forever.
-- The user can't tell, at a glance, which of 10 open conversations still need their attention.
+- A session gets stuck waiting for user input. The orchestrator doesn't know and plans the next Wave as if this one finished.
+- A session crashes (context exhaustion, terminal closed). No report ever arrives. The row sits at `implementing` forever.
+- The user can't tell which of several open conversations need their attention.
+- Polling every few minutes burns the orchestrator's context and usage limits on "nothing changed".
 
-## Two complementary mechanisms
+## 1. Wake on idle notifications (the orchestrator's trigger)
 
-You don't need both. Start with B (zero session-side cost); add A if you want a single dashboard view.
+Claude Code's cross-session messaging lets the orchestrator subscribe to a master's **idle** event: `SendMessage` with `notify_when_idle` and no body. When the master's turn ends, the orchestrator gets a one-line notification and wakes. Subscribing costs the master nothing.
 
-### A. `last_activity` heartbeat in `_progress.md`
+- Decide once after the first launches, and record `wake_mode: notify|poll` in `_progress.md`. Use **notify** only if all hold: the `ListAgents` / `SendMessage` tool schemas load (they are deferred tools — load them via ToolSearch first), the launched masters appear in `ListAgents` (their name is the tab name passed as `--name`; allow 2-3 minutes after launch), and `notify_when_idle` is accepted.
+- Always keep a **fallback** `ScheduleWakeup(3600)` (the maximum is one hour) and call it at the end of every turn.
+- Notifications fire **once**: resubscribe every master that isn't done. Subscriptions expire after 12 hours: resubscribe on fallback wakes.
+- Subscribe from the main conversation, not from a subagent (subagent subscriptions don't take).
+- **Idle ≠ done.** A master is also idle while asking a question, after a context run-out, or when blocked. The notification is a reason to look, not evidence.
+- **poll** mode (any condition missing): `ScheduleWakeup` 20 min, then 30 min.
 
-Add a `last_activity` column to the dashboard. Each session stamps it at meaningful checkpoints (start, after each commit, when it asks the user a question, at completion).
+Count `idle_cycles` only on fallback / poll wakes with no change; after 3, stop sleeping and wait for the user.
 
-```markdown
-| ID | Title | wave | status | launched_at | last_activity | branch | notes |
-|---|---|---|---|---|---|---|---|
-| api-003 | Test recovery | 4 | in_progress | 14:02 | 14:37 | plan/api-003 | running suite |
-```
+## 2. Liveness from commits and the working tree (the truth)
 
-Rule of thumb for the orchestrator (or user) reading it:
-
-- `last_activity` within ~15 min → session is alive and working
-- `last_activity` 15–45 min stale **and** status still `in_progress` → probably waiting on the user; go check that conversation
-- `last_activity` 45+ min stale → likely dead; consider re-launching from the plan MD's execution log
-
-The session updates its **own row in its worktree snapshot**, exactly like it already does for status. The orchestrator re-applies it to the master only when it processes that session's summary — so for *live* monitoring, the user reads the worktree snapshots, or uses mechanism B.
-
-### B. `git log` spot-check (zero session-side cost)
-
-The branches don't lie. A session that's working is committing; a session that hasn't committed in an hour has either stalled or is mid-conversation.
+The branches don't lie. A session that's working is committing or changing files:
 
 ```bash
-# Which plan branches have shipped commits recently?
-git log --all --oneline --since='1 hour ago' | grep 'plan-'
-
-# Last commit time per active plan branch
-git for-each-ref --sort=-committerdate \
-  --format='%(committerdate:relative)  %(refname:short)' \
-  refs/heads/plan/
-
-# Worktrees that exist but show no recent commits → candidates to check on
-ls .worktrees/
+git rev-list --count plan/<id> ^main            # commits ahead of main
+git -C .worktrees/<id> status --porcelain        # uncommitted work in progress
+git log --all --oneline --since='25 minutes ago' | grep 'plan-'
+git log main..plan/<id> --oneline --grep 'mark done'   # done (limit to main..plan/<id>!)
 ```
 
-This requires **nothing from the sessions** and survives crashes (the commits are real even if the terminal died). The downside: it only sees committed work, so a session doing a long uncommitted investigation looks idle. That's acceptable — pair it with the heartbeat (A) if it matters.
+- **Don't** use the presence of the session's conversation-log directory as a liveness signal — a session made two commits before its directory appeared.
+- **Don't** judge in the first 1-2 minutes after launch — the first response takes a while.
+- Survives crashes: commits are real even if the terminal died.
 
-**Orchestrator context cost**: running `git log` inflates the orchestrator's context (see [METHODOLOGY.md §12](../METHODOLOGY.md#12-context-economy-orchestrator-side)). Prefer to have the **user** run the spot-check and only escalate findings to the orchestrator ("plan 415 has no commits in 50 min — should I re-launch?").
+## 3. The inbox (what happened)
+
+Masters append a short report to `.claude/plans/inbox.md` and commit it on done / blocked / cancelled, and file execution requests there too. On every wake the orchestrator reads it in **three places**: each plan branch's inbox (`git log main..plan/<id> -p -- .claude/plans/inbox.md`), main's inbox, and each worktree's uncommitted inbox diff (`git -C .worktrees/<id> diff -- .claude/plans/inbox.md`). Requests were missed for hours when only one place was checked.
+
+## 4. "Waiting for the user" board (where to look)
+
+A small set of Claude Code hooks can maintain a shared list of sessions waiting on the user:
+
+| Hook event | Board |
+|---|---|
+| `Notification` with `permission_prompt` | add "waiting for permission" |
+| `Notification` with `idle_prompt` (no input for ~60 s after a reply) | add "waiting for reply" with the last message's first line |
+| `UserPromptSubmit` / `Stop` / `SessionEnd` | remove |
+
+Name each entry by the tab name the launcher assigned (`M:<project>/<id> <task>`). On wake the orchestrator reads the board and tells the user only **where** to look — "plan `auth-001` is waiting for you since 14:20 — open tab `M:myapp/auth-001 …`" — never the question itself (the master talks to the user directly). Sessions that are merely sleeping under `/loop` aren't "waiting".
+
+Masters additionally stamp `last_activity` (HH:MM) and, if the user is away, `status: waiting-user` on their row of the `_progress.md` snapshot at checkpoints. That's a fallback if you don't install the hooks.
 
 ## Detecting "Wave done" reliably
 
-A Wave is done when every row is `done`/`cancelled`/`blocked`. Mechanism B catches the failure mode where a session closes without emitting a summary:
-
-```bash
-# Sessions still expected to report:
-#   rows at in_progress in _progress.md
-# vs branches that look finished:
-git log --all --oneline --since='today' | grep 'plan-'
-
-# Plans that renamed themselves to _done (the explicit completion signal):
-git log --all --diff-filter=A --since='today' --name-only --pretty=format: | grep '_done\.md$'
-```
-
-A completed plan leaves two detectable traces: a `<id>-<slug>_done.md` file appearing in its branch, and/or a `chore(plan-<id>): mark done` commit. If a row is `in_progress` but its branch shows either of those, the summary was probably just lost in the shuffle — ask the user to re-paste, or read the plan MD's execution log directly.
-
-## Session-side rule (goes in INSTRUCTIONS.md / starter prompt)
-
-> Stamp `last_activity` (HH:MM) on your row whenever you: start, finish a commit, ask the user a blocking question, or reach a terminal state. This is cheap bookkeeping, not a status change.
+A Wave is done when every row is `done` / `cancelled` / `blocked`. A completed plan leaves two traces on its branch: the `<id>-<slug>_done.md` file and the `chore(plan-<id>): mark done` commit (the source of truth). If a row says `implementing` but the branch has the mark-done commit, the report was missed — read the plan MD's execution log or the branch's inbox.
 
 ## What this pattern deliberately does NOT do
 
-- **No polling daemon.** The orchestrator still doesn't poll (that burns context and the model's attention). Liveness is checked *on demand* — when the user wonders "is Wave 4 actually done?".
-- **No automatic re-launch.** A stale session is surfaced, not auto-restarted. Re-launch is a user decision (the plan MD's execution log tells you where it stopped).
-- **No cross-process messaging.** Sessions remain independent. This pattern only reads shared artifacts (`_progress.md`, git history).
-
-## When to scale past this
-
-If you routinely run 20+ sessions, or run them unattended, the heartbeat-in-a-Markdown-table approach gets unwieldy. At that point consider instrumenting the launcher to log PIDs (see [`scripts/launch_claude.py`](../scripts/launch_claude.py) launch log) and writing a small status script that joins the launch log with `git for-each-ref`. That's out of scope for the file-based method described here.
+- **No busy polling.** Notifications plus a 60-min fallback.
+- **No automatic re-launch.** A stale session is surfaced, not auto-restarted. Re-launching is a user decision (the execution log says where it stopped) — and never while the old master is still running.
+- **No relaying via messages.** Messages are wake-up hints. They can expire unseen when the two sides run in different permission modes, and they are never user approval. The content of record is the committed inbox.
 
 ## TL;DR
 
-1. Add a `last_activity` column; sessions stamp it at checkpoints.
-2. For crash-proof truth, `git log --all --since=1h | grep plan-` — branches don't lie.
-3. Let the **user** run spot-checks; escalate only findings to the orchestrator (context economy).
-4. Surface stale sessions; don't auto-restart.
+1. Subscribe to masters' idle notifications; 60-min fallback wake; poll 20-30 min only if notifications are unavailable.
+2. Liveness = commits + worktree changes. Not log directories, not the first minute.
+3. Read the inbox in all three places on every wake.
+4. Tell the user which tab is waiting — never relay the question.
+5. Surface stale sessions; don't auto-restart.

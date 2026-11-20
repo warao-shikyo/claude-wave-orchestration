@@ -21,6 +21,15 @@ A **build Wave** ships features/fixes (the normal Wave). A **test Wave** ships n
 
 The cost is real: test Waves don't reduce the backlog count, so they *feel* slow. Budget for them anyway — the alternative is the deploy-time pileup.
 
+## Ground rules for every test run
+
+These came from a later operation where parallel sessions each ran the suite and froze the user's machine:
+
+- **One test run at a time across all sessions.** Use an exclusive wrapper that queues runs; block the raw test command with a hook.
+- **No full-suite runs from sessions** (build or test Wave). Sessions run the suites covering what they touched, once, right before completion.
+- **The full suite runs on a schedule, once a day** (e.g. at night) — not per session, not per deploy, not per integration. The orchestrator reads the result on its morning patrol and files failures as fix plans.
+- **Read the passed count.** A wrapper given non-test files or nonexistent paths can finish "successfully" with zero tests.
+
 ## Two layers of "testing"
 
 ### Layer 1 — Definition-of-Done per plan (every build Wave)
@@ -44,9 +53,9 @@ A test Wave is composed of sessions whose only job is verification of recently-s
 - Plans whose summary said `NOT VERIFIED — deferred`
 - Plans that touched **hot files** (see [main-merge-strategy.md](main-merge-strategy.md)) — high blast radius
 - Cross-cutting findings logged in `_progress.md` that smell like regressions
-- The integration branch (see [between-Wave integration](main-merge-strategy.md#between-wave-integration-during-the-operation)) — run the **full** suite there, since that's where Waves combine
+- The integration branch (see [between-Wave integration](main-merge-strategy.md#between-wave-integration-during-the-operation)) — the scheduled full-suite run should target it, since that's where Waves combine
 
-A test-Wave session does **not** implement features. If it finds a bug, it logs it as a new plan for a future build Wave (or fixes it only if trivial and in-scope), exactly like any audit session.
+A test-Wave session does **not** implement features. If it finds a bug, it logs it as `new-issues` for a future build Wave (or fixes it only if trivial and in-scope), exactly like any audit session. It still follows the ground rules above — narrow suites through the wrapper, one at a time.
 
 ## Sequencing example
 
@@ -74,18 +83,19 @@ See [templates/starter-prompt-template.md](../templates/starter-prompt-template.
 対象: {TARGET_PLANS} で出荷されたコードが実際に動くかを検証。
 手順: 統合ブランチ上で対象のテストを実行し、回帰を探す。
 発見したバグは新規 plan として提案（軽微かつ範囲内なら修正可）。
+テストは排他ラッパー経由で 1 本ずつ・対象を絞る（全体テストは時限実行に任せる）。
 判定: verified / regressions-found(リスト) / cannot-verify(理由)。
-成果は commit のみ（push / PR / merge はユーザー判断）。検証完了なら plan を `<id>-<slug>_done.md` にリネーム。
+成果は commit のみ（merge / デプロイは orchestrator の工程）。検証完了なら inbox に短報を書き、plan を `<id>-<slug>_done.md` にリネーム。
 ```
 
 ## Relationship to deployment baseline
 
-A test Wave verifies "code present in the branch works." It does **not** verify "running in production" — that's the deployment-baseline concern (see [METHODOLOGY.md §0](../METHODOLOGY.md#0-kickoff-capture-the-baseline)). Keep the two distinct: a test Wave can pass while production is still running last month's code.
+A test Wave verifies "code present in the branch works." It does **not** verify "running in production" — that's the job of the **verify** step the orchestrator runs after every deploy (see [METHODOLOGY.md §6](../METHODOLOGY.md#6-landing-model)). Keep the two distinct: a test Wave can pass while production is still running last month's code.
 
 ## TL;DR
 
 1. Every plan's DoD states how it was verified — `NOT VERIFIED — deferred` is allowed but must be explicit.
-2. Run a test Wave every ~3 build Waves; never accumulate more than ~3 Waves of unverified work.
+2. Run a test Wave every ~3 build Waves; never accumulate more than ~3 Waves of unverified work. One test run at a time; the full suite runs on a daily schedule.
 3. Test Waves ship no features; they verify, and file regressions as new plans.
-4. Run the full suite on the integration branch, where Waves combine.
+4. Point the scheduled full suite at the integration branch, where Waves combine.
 5. The final comprehensive pass becomes confirmation, not discovery.

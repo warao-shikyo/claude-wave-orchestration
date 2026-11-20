@@ -30,9 +30,11 @@ Things we did wrong, things we'd do differently, things to avoid if you try this
 **Fix midway through the operation**: We started treating the orchestrator's `_progress.md` as the only canonical copy. Worktree copies became read-only snapshots that sessions could reference but not really merge.
 
 **Recommendation from day 1**:
-- Put `_progress.md` (and any operational state files) in `.gitignore` from the start
-- OR keep `_progress.md` outside the repo entirely (e.g. in `~/.claude/`)
-- Either way, ensure sessions don't try to commit their copy
+- Exactly one writer: `_progress.md` lives on main and only the orchestrator commits it (one commit per patrol)
+- Worktrees receive it through `git worktree add` as a read-only snapshot; sessions only stamp their own row
+- Sessions report through an append-only `inbox.md` instead of editing shared state
+- When merging a plan branch, keep main's `_progress.md`; union only append-only files like `inbox.md`
+- (Alternatives if your setup prefers: `.gitignore` it, or keep it outside the repo)
 
 ## 3. PR/push policy was only formalized at Wave 9
 
@@ -47,7 +49,7 @@ Things we did wrong, things we'd do differently, things to avoid if you try this
 
 **Recommendation**: Don't make push/PR a per-session decision at all. The cleaner rule (now baked into the method) is that **a session master's landing authority ends at `commit`** — push, PR, and merge to main are all the user's call. No table to negotiate; sessions just commit.
 
-**v2 status**: standardized — the landing model is now [METHODOLOGY.md §6](METHODOLOGY.md#6-landing-model): sessions commit only; push / PR / merge are user-driven; deploying from the worktree for verification only is the one exception. This removes the per-Wave "PR or not?" churn entirely.
+**v2 status**: standardized — the landing model is now [METHODOLOGY.md §6](METHODOLOGY.md#6-landing-model): masters commit only; merge and deploy are the orchestrator's steps with user approval; push / PR are the user's. The earlier exception "masters may deploy from the worktree for verification" was withdrawn (see #20).
 
 ## 4. Topic drift on "remembered" plans
 
@@ -75,7 +77,7 @@ Things we did wrong, things we'd do differently, things to avoid if you try this
 - Or: orchestrator can spot-check with `git log --all --since=1h` to see which branches have recent commits
 - Or: instrument the launcher to log session PIDs and periodically check liveness
 
-**v2 status**: standardized — see [session-monitoring.md](patterns/session-monitoring.md) (a `last_activity` heartbeat plus on-demand `git log` spot-check, no polling).
+**v2 status**: standardized — see [session-monitoring.md](patterns/session-monitoring.md): the orchestrator wakes on masters' idle notifications (60-min fallback), judges liveness from commits and worktree changes, and a hook-maintained "waiting for the user" board tells the user which tab needs them.
 
 ## 6. We didn't establish "operational state vs project state" early
 
@@ -90,6 +92,8 @@ Things we did wrong, things we'd do differently, things to avoid if you try this
 - Only commit final docs (e.g. INDEX.md, comprehensive_test_plan.md) to the project repo
 
 The templates in this repo are designed to support either layout — see [templates/INSTRUCTIONS.md](templates/INSTRUCTIONS.md).
+
+**v2 status**: we kept plans in the repo (`.claude/plans/`) but made the boundaries strict: `.claude/plans/` holds only plans not yet done (done ones are `git mv`ed to `docs/specs/` as an archive), `_progress.md` has a single writer, reports go to an append-only inbox, verify results go to `.claude/verify/`.
 
 ## 7. `.claude.json` lock contention on rapid launch
 
@@ -126,7 +130,7 @@ The templates in this repo are designed to support either layout — see [templa
 
 In practice we still drifted. Discipline is hard. Acknowledge it and move on if it happens — but try.
 
-**v2 follow-up — the "consultant" drift**: a later operation drifted the other way: the user started asking the orchestrator for comparisons, cost research, test proposals and "what should we do?", and the orchestrator answered (spawning research subagents, drafting plans). The patrol loop slipped and several execution requests from sessions sat unnoticed. The user's diagnosis: *"once you proposed the tests and I started relying on you for that, it broke."* Rule now: questions of the form compare / research / propose / "how should we" go to a **planner** session (write the gist to the inbox, reply in one line "handed to the planner"). The orchestrator only does launching, integration, deploy, pre-production checks, and running sessions' execution requests (#17).
+**v2 follow-up — the "consultant" drift**: a later operation drifted the other way: the user started asking the orchestrator for comparisons, cost research, test proposals and "what should we do?", and the orchestrator answered (spawning research subagents, drafting plans). The patrol loop slipped and several execution requests from sessions sat unnoticed. The user's diagnosis: *"once you proposed the tests and I started relying on you for that, it broke."* Rule now: questions of the form compare / research / propose / "how should we" go to a **planner** session (write the gist to the inbox, reply in one line "handed to the planner"). The orchestrator only does launching, integration, deploy, pre-production checks, and running sessions' execution requests (#17). The same goes for raw problems: the orchestrator doesn't read a single file to "take a quick look" — it launches a planner session, which talks with the user and files `ready` plans.
 
 ## 10. "Comprehensive testing" was deferred without a date
 
@@ -150,7 +154,7 @@ In practice we still drifted. Discipline is hard. Acknowledge it and move on if 
 - Note: which branches/commits are actually live in production
 - Sessions should distinguish "code present in branch" vs "running in production"
 
-**v2 status**: standardized — the deployment baseline is now METHODOLOGY §0; sessions report deploy status as `none` / `verified-on-deploy` / `live`. See [progress-template.md](templates/progress-template.md).
+**v2 status**: standardized — the deployment baseline is METHODOLOGY §0. Only the orchestrator deploys; each deploy is recorded as `deploy: <date> main@<sha> <measured>` and followed by a verify, so `merged`, `deployed` and `verified` are distinct states. See [progress-template.md](templates/progress-template.md).
 
 ## 12. We didn't have a `STOP` signal
 
@@ -161,6 +165,8 @@ In practice we still drifted. Discipline is hard. Acknowledge it and move on if 
 - Sessions should check for it before major actions
 - Or just accept that "halt" = "close terminals" and document that fact
 
+**v2 note**: to stop paid batch work, stop *starting* the remaining items rather than killing processes. When a session process must be stopped, re-check its command line right before (PIDs are reused, #19), and never stop one that has uncommitted work.
+
 ## 13. Cost wasn't tracked per session
 
 **What happened**: We don't know the per-session token cost. We know the operation was expensive but not which sessions were the expensive ones.
@@ -169,7 +175,7 @@ In practice we still drifted. Discipline is hard. Acknowledge it and move on if 
 - If cost matters, instrument the launcher to log session start/end + use Claude Code's usage reports
 - For optimization, batch sessions are remarkably cheap per outcome — favor them where possible
 
-**v2 status**: partially addressed — the launcher now writes a per-launch record to `~/.claude/wave-launch-log.jsonl`; join it against Claude Code usage reports. See [METHODOLOGY §11](METHODOLOGY.md#11-cost-considerations).
+**v2 status**: partially addressed — the launcher writes a per-launch record (tab name, role, plan id) to `~/.claude/wave-launch-log.jsonl`; join it against Claude Code usage reports. Usage limits also drove the token rules in [METHODOLOGY §11](METHODOLOGY.md#11-cost-considerations) (medium effort for the orchestrator, notification-driven wakes, one log line per checkpoint).
 
 ## 14. We didn't audit memory updates
 
@@ -179,6 +185,8 @@ In practice we still drifted. Discipline is hard. Acknowledge it and move on if 
 - Include memory hygiene in the post-operation review
 - Either accept memory as session-by-session contribution, or have a "memory editor" session post-operation
 
+**v2 status**: auto memory is shared by every worktree of the same repo, so there is nothing to "collect" from worktrees. Masters write at most 2 durable, non-obvious facts directly (checking `MEMORY.md` for duplicates) and list them as `memory-written`; anything they're unsure about goes to `memory-candidates`, which the orchestrator files into the backlog for the user to decide.
+
 ## 15. We never used CronCreate or scheduled work
 
 **What happened**: This is more "what we didn't try" than "what went wrong." All sessions were synchronous to user activity.
@@ -186,6 +194,8 @@ In practice we still drifted. Discipline is hard. Acknowledge it and move on if 
 **Possible enhancement**: A "harvest" cron that runs nightly and updates `_progress.md` with branch state changes, makes the next Wave's planning easier.
 
 We didn't try it because the operation only ran 5 days. For longer operations it might be worth exploring.
+
+**v2 status**: the orchestrator now runs under `/loop` with `ScheduleWakeup` (idle notifications + a 60-min fallback), and the full test suite runs on a schedule once a day instead of in sessions or per deploy; the orchestrator files the morning's failures as fix plans.
 
 ## 16. Verbose completion summaries inflated the orchestrator's context
 
@@ -215,83 +225,35 @@ The orchestrator should update `_progress.md` via the `Edit` tool's diff-only me
 
 This alone saves ~10 KB per summary.
 
-### Tactic B: sessions emit summaries in TWO sections (user-detail + orchestrator-short)
+### Tactic B: separate the two audiences — and take the user out of the relay
 
-We initially thought short summaries were strictly better. **They're not** — the user actually values rich summaries for their own situational awareness. The right move is to **separate the two audiences**:
+We initially thought short summaries were strictly better. **They're not** — the user actually values rich summaries for their own situational awareness. The right move is to **separate the two audiences**. We first did this by having sessions print two sections and the user paste the short one to the orchestrator. That still made the user a relay. Now:
+
+- **For the orchestrator**: the session appends a short structured report (≤12 lines) to `.claude/plans/inbox.md` and **commits** it. The orchestrator reads the inbox on its patrol — nobody pastes anything.
+- **For the user**: the session prints a detailed summary in its own terminal, and writes the full report in the plan MD.
 
 ```
-=== Detailed summary (for the user) ===
-[whatever rich prose the session wants — for the user to read]
-- What was changed
-- Test results
-- Edge cases discovered
-- Cross-cutting observations
-- commit info
-...
-
-=== Short summary (for the orchestrator, paste this) ===
-plan {area}-{NNN} → {done|cancelled|blocked}
-commit: {hash} (push: no — landing authority ends at commit)
+## [<id>] <HH:MM> done|cancelled|blocked
+commit: <hash> (push: no — commit is the end of responsibility)
 verified: unit|integration|manual|deferred
-deploy: none|verified-on-deploy|live
-done-file: {area}-{NNN}-{slug}_done.md
+deploy: none
+verify: <what to check after deploy, or none>
+done-file: <id>-<slug>_done.md
+updated-docs / new-issues / residual: <0-3 lines each>
+memory-written / memory-candidates: <file names / facts, or none>
 key: <30-chars take-away>
-new-issues: <new issues, 0-3 lines>
-residual: <residual work, 0-3 lines>
 ```
-
-The user reads the detailed section themselves (no impact on orchestrator context — happens in the user's eyes/brain). They paste **only the short section** to the orchestrator. The orchestrator processes the short version with `Edit` + ≤2 sentence acknowledgment.
-
-Long detailed prose still belongs in:
-- The plan MD's execution log (audit trail, persisted)
-- The commit message (shipped with code)
-
-But also, in real-time: in the **"for the user"** section of the completion output. Don't strip it.
 
 ### Combined effect
 
-With both tactics, orchestrator context per summary drops from ~15 KB to ~500 chars — a **30x reduction**. Operations of 500+ plans become tractable without ever hitting context compaction.
-
-### Recommendation for the bootstrap prompt
-
-Add to the orchestrator bootstrap (`templates/orchestrator-bootstrap-prompt.md`):
-
-```
-- Update _progress.md via Edit tool's diff-only mechanism. Do NOT re-Read the file for each update — read it once at startup.
-- Acknowledge summaries in ≤2 sentences. Don't restate what the user just pasted.
-- Note cross-cutting findings in a separate dedicated message, not inline with every acknowledgment.
-```
-
-Add to session starter prompts:
-
-```
-On completion, emit TWO sections:
-
-=== Detailed summary (for the user to read) ===
-[Whatever rich prose helps the user understand what changed]
-
-=== Short summary (paste this to the orchestrator) ===
-plan {area}-{NNN} → done|cancelled|blocked
-commit: hash (push: no — landing authority ends at commit)
-verified: unit|integration|manual|deferred
-deploy: none|verified-on-deploy|live
-done-file: {area}-{NNN}-{slug}_done.md
-key: <30-chars take-away>
-new-issues: <new issues, only if any>
-residual: <residual work, only if any>
-```
+With both tactics, orchestrator context per summary drops from ~15 KB to ~500 chars — a **30x reduction** — and the user no longer spends attention copying text between tabs.
 
 ### Instructions for the human (user)
 
-The user is the bridge between sessions and the orchestrator. To keep the orchestrator lean, the user should:
-
-1. **Read the detailed section yourself** — that's where situational awareness lives. The orchestrator never sees it; no context cost.
-2. **Paste only the short section** into the orchestrator chat. The orchestrator processes that for `_progress.md` updates.
-3. If you want the orchestrator to know about a cross-cutting issue from the detailed section, **mention it explicitly in your next message** — e.g. "the 412 session also flagged a delegation-token security gap, please track that." Don't expect the orchestrator to infer it from a long paste.
-4. **Don't ask the orchestrator "summarize what happened in the last 3 sessions"** unless necessary — the orchestrator would have to re-read `_progress.md`, expanding context. Read `_progress.md` yourself instead.
-5. **Do ask the orchestrator "what should be in the next Wave?"** — that's high-value orchestrator reasoning, worth the context.
-
-This is collaborative discipline: the user does the reading, the orchestrator does the tracking, and the two pieces of context stay separate.
+1. **Read the detailed summary in the session's tab yourself** — that's where situational awareness lives.
+2. **Don't paste summaries into the orchestrator.** Paste only when a cross-session message didn't arrive, and then only its plain body (see #18).
+3. If you want the orchestrator to track a cross-cutting issue from a detailed summary, **say so explicitly**.
+4. **Do ask the orchestrator "what should be in the next Wave?" / "merge now?"** — high-value orchestrator reasoning. Don't ask it to research or compare (that's a planner's job, #9).
 
 ## 17. Sessions couldn't run privileged commands, and their requests got lost
 
@@ -318,13 +280,68 @@ This is collaborative discipline: the user does the reading, the orchestrator do
 - **Shared version numbers collided**: two plans each bumped the same shared template version N→N+1. Picking one side silently drops the other. Combine both and bump to a new version.
 - **A test run that ran nothing**: passing non-test files or nonexistent paths to the test wrapper ended "successfully" with zero tests. Always read the passed count.
 
+## 20. Masters deployed "for verification" from their worktrees
+
+**What happened**: Sessions were allowed to deploy from their worktree to verify their own work. Many deploy commands sync the **working tree**, not a git ref — so a deploy from `plan/<id>` would have shipped production without every other session's work that wasn't in that branch. It was caught just before it happened. Meanwhile other masters, unable to deploy, sat `blocked` "waiting for deploy", holding worktrees and tabs open.
+
+**Recommendation**:
+- Masters never deploy. Post-deploy checks go into the inbox `verify:` line (command, value to look at, expected value) and the master declares done.
+- One deployer: the orchestrator integrates into main, deploys main with user approval, measures the result (content hash, not only the revision number), and runs verify once per deploy.
+- A verify failure doesn't reopen the plan: a planner files a fix plan.
+
+## 21. The plan MD never reached the worktree, and seeding broke tracked files
+
+**What happened**:
+- A plan MD written into the root's `.claude/plans/` but not committed to the base branch is invisible in a new worktree — `git worktree add` only brings committed files. A session started without its plan.
+- Copying `_progress.md` / `inbox.md` / `INSTRUCTIONS.md` from the root into the worktree overwrote the base's newer versions with whatever branch the root happened to be on, leaving "rolled back" uncommitted changes. Emptying `inbox.md` in a worktree, once committed, would have deleted other sessions' reports.
+- A STARTER.md generated for another plan was left in place, and the session read the wrong mission.
+
+**Recommendation**: seed by `cp` **only** the files the base lacks (the plan MD, the generated STARTER.md), and run a pre-launch check that refuses to launch unless the plan MD exists in the worktree, STARTER.md names this plan, and no tracked file is modified.
+
+## 22. Git Bash ate the slash command
+
+**What happened**: Launching `python launch_claude.py <path> "/session-master auth-001 ..."` from Git Bash turned the prompt into `C:/Program Files/Git/session-master auth-001 ...` (MSYS path conversion). The session started but the slash command never ran.
+
+**Recommendation**: always prefix with `MSYS_NO_PATHCONV=1`, and pass absolute paths in `C:/...` form (`$(pwd -W)`), since `/c/...` is no longer converted. Verify once by looking at the launched process's command line. Also: no backticks in launch prompts — bash executes them.
+
+## 23. Parallel test runs froze the user's machine
+
+**What happened**: Every master ran the test suite on its own schedule, several at once. CPU and IO saturated and the user's terminal became unusable.
+
+**Recommendation**:
+- Only one test run at a time across all sessions — an exclusive wrapper that queues, with the raw test command blocked by a hook.
+- Sessions run only the suites covering what they touched, once, before completion; never the full suite.
+- The full suite runs on a schedule once a day; not per session, not per deploy.
+- Limit concurrent masters (3-6).
+- Read the passed count: a wrapper given non-test files can "pass" with zero tests (#19).
+
+## 24. Inventory and liveness judged from the wrong signals
+
+**What happened**:
+- A plan looked "not started" for weeks because its file in main's `.claude/plans/` still had the pre-done name — done happens on the branch, and main only sees it after merge.
+- A master was judged dead because its conversation-log directory didn't exist yet; it had already made two commits.
+- Sessions were judged in the first minute after launch, before their first response.
+- A session-listing command returned nothing — not even the orchestrator itself — and was read as "no sessions to stop", so finished masters were never stopped.
+
+**Recommendation**:
+- Done = `chore(plan-<id>): mark done` in `main..plan/<id>` (limit the range — grepping the whole branch also matches main's old mark-done commits). Check this before putting a plan in a Wave; done-but-unmerged plans are integration work.
+- Liveness = commits (`git rev-list --count plan/<id> ^main`) and worktree changes (`git status --porcelain`); wait a few minutes after launch.
+- Ask the OS for processes. A list that doesn't even contain yourself is broken, not empty.
+
+## 25. Worktree removal failed, and dead tabs piled up
+
+**What happened**: On Windows a running session locks files in its worktree, so `git worktree remove` failed after done and the post-processing chain stalled while the user was away. The console session ignores a polite close, so it must be force-stopped — and a force-stopped tab stays open as "process exited with code 1" unless the terminal is told to close tabs on any exit.
+
+**Recommendation**: post-processing stops the finished master first — only if its plan is done and its worktree has no uncommitted changes, matching the exact plan id on the command line and never touching the orchestrator or other plans — then removes the worktree (keeping the branch). Configure the terminal to close tabs on exit, or tell the user how many dead tabs to close. Also never launch a second master for a plan whose master is still running: two sessions in one worktree collide on commits.
+
 ---
 
 ## TL;DR
 
-Top 4 things to fix on Day 1 of any future engagement:
+Top things to fix on Day 1 of any future engagement:
 
 1. **Integrate between Waves** into `integration/latest-known-good`, don't let branches pile up
-2. **Keep `_progress.md` out of all `plan/<area>-<NNN>` branches** — orchestrator-only state
-3. **Sessions commit only** — push / PR / merge are the user's call; no per-Wave policy to negotiate
-4. **Short structured summaries + orchestrator uses `Edit` for `_progress.md`** — keeps context lean over hundreds of summaries
+2. **One writer for `_progress.md`** (the orchestrator, on main) — never merged from `plan/<area>-<NNN>` branches
+3. **Masters commit only; the orchestrator alone merges and deploys** (with user approval), then verifies
+4. **Reports go through a committed inbox, not the user's clipboard**; the orchestrator uses `Edit` for `_progress.md` and wakes on idle notifications
+5. **One test run at a time, no full suite in sessions** — the full suite runs on a schedule

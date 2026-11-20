@@ -31,9 +31,9 @@ A Wave includes the INDEX as a session target. That session:
 3. Writes a **completion summary table** in the INDEX MD
 4. Writes a **residual issues list** (anything not done at the INDEX level, often deployment / E2E testing)
 5. Closes the INDEX by `git mv`-ing its plan MD to `<id>-<slug>_done.md` and committing `chore(plan-<id>): mark done`
-6. Updates `_progress.md`
+6. Appends its report to the inbox (the orchestrator updates `_progress.md`)
 
-**No new code.** The session reads, summarizes, closes. ~30 min of work. The work is committed only — push / PR / merge stay with the user.
+**No new code.** The session reads, summarizes, closes. ~30 min of work. The work is committed only — merge and deploy are the orchestrator's steps with user approval.
 
 ## The summary table format
 

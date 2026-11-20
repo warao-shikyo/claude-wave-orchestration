@@ -14,18 +14,21 @@ You have a backlog of work and want to clear it methodically with **parallel exe
 
 ## Wave sizing
 
-Pick N (sessions per Wave) by:
+Pick N (plans per Wave) by:
 
 | N | When |
 |---|---|
 | 3-5 | First Wave to validate the method, or when sessions need heavy user interaction |
 | **8-12** | **Default sweet spot** |
-| 13+ | Only if you've automated parts (e.g. starter prompts, _progress.md updates) and sessions are mostly independent |
+| 13+ | Only if you've automated parts (e.g. STARTER generation, _progress.md updates) and sessions are mostly independent |
 
-Larger Waves stress:
-- `~/.claude.json` write contention (file lock during launcher's trust-registration step)
+Separately, cap how many masters **run at the same time** — typically **3-6** — and launch the rest of the Wave as earlier ones finish. Too many at once stresses:
+- CPU / IO and tests (parallel test runs made the user's machine unusable — see [test-waves.md](test-waves.md))
+- Usage limits (every running session spends tokens)
+- `~/.claude.json` write contention (the launcher's trust-registration step)
 - User cognitive load (each session opens its own conversation)
-- Orchestrator's `_progress.md` update tempo
+
+The user approves each Wave before it's launched.
 
 ## Composing a Wave
 
@@ -61,11 +64,12 @@ We did 11 Waves over 5 days for a ~140-item backlog. Your scale will vary.
 
 After each Wave completes (all rows are `done|cancelled|blocked`):
 
-1. **Update master `_progress.md`** — reflect all outcomes
+1. **Update master `_progress.md`** — reflect all outcomes (from the inbox)
 2. **Note cross-cutting findings** — what did sessions independently discover?
-3. **Identify follow-ups** — new plans needed? Add to candidate list.
-4. **Integrate this Wave** into `integration/latest-known-good` so the next Wave isn't based on stale main — see [between-Wave integration](main-merge-strategy.md#between-wave-integration-during-the-operation)
-5. **Pick next Wave's plans** — apply composition formula above
+3. **Identify follow-ups** — new-issues / residual are already in `_backlog.md`; ask the user which become plans (a planner writes them)
+4. **Integrate this Wave** (user approval) into `integration/latest-known-good` so the next Wave isn't based on stale main — see [between-Wave integration](main-merge-strategy.md#between-wave-integration-during-the-operation)
+5. **Deploy + verify** (user approval; orchestrator only) — failures come back as fix plans
+6. **Pick next Wave's plans** — skip plans whose branch already has `mark done` (integration work), apply the composition formula above
 
 The "between" gap shouldn't be long — momentum matters.
 
@@ -78,10 +82,12 @@ Stagger session launches by **5-6 seconds**, not all at once:
 - Spreads load on user (the user starts seeing session prompts in sequence, not 10 at once)
 
 ```bash
-# Pseudo-orchestration
+# Pseudo-orchestration (after worktree + seed + STARTER.md + the b3 check for each plan)
 for plan_id in $WAVE; do   # e.g. auth-001 billing-003 ui-002 ...
-  python launch_claude.py .worktrees/$plan_id "<starter prompt>"
-  sleep 5
+  MSYS_NO_PATHCONV=1 python launch_claude.py "$(pwd -W)/.worktrees/$plan_id" \
+    --role master --plan-id "$plan_id" --task "<plan title>" \
+    "/session-master $plan_id（.claude/plans/STARTER.md を読んで開始）"
+  sleep 6
 done
 ```
 
@@ -89,18 +95,20 @@ done
 
 A Wave is **complete** when `_progress.md` shows all that Wave's rows as `done`, `cancelled`, or `blocked` (with reason).
 
-Common pitfall: sessions sometimes silently close without an explicit "done." Check periodically:
+Common pitfall: sessions sometimes silently close without an explicit report. On each wake (idle notification or fallback — see [session-monitoring.md](session-monitoring.md)):
 
 ```bash
-git log --all --oneline --since='2 hours ago' | grep 'plan-'   # what's actually shipped
-ls .worktrees/                                                  # what worktrees exist
+git log main..plan/<id> --oneline --grep 'mark done'   # done, even if the report was missed
+git rev-list --count plan/<id> ^main                     # commits since base
+git -C .worktrees/<id> status --porcelain                # uncommitted work in progress
 ```
 
-If a session's worktree exists but has no recent commits, ask the user.
+If a session's worktree shows neither new commits nor changes for a long time, check the waiting-user board, then ask the user.
 
 ## Wave anti-patterns
 
-- ❌ **Launching all 100 sessions at once** — user can't keep up, `.claude.json` thrashes
+- ❌ **Launching all 100 sessions at once** — user can't keep up, tests collide, `.claude.json` thrashes
+- ❌ **Launching a second master for a plan whose master is still running** — two sessions in one worktree collide on commits
 - ❌ **Waiting for the perfect plan composition** — pick reasonable mix and go
 - ❌ **Re-launching halfway through** — if a Wave is going poorly, complete it then adjust next Wave, don't disrupt mid-flight
 - ❌ **Treating Wave size as fixed forever** — adjust based on observed outcomes

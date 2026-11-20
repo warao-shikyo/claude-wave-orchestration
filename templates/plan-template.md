@@ -10,14 +10,16 @@ not a Status edit. See INSTRUCTIONS.md.
 draft
 
 <!--
-Lifecycle: draft → ready → in_progress → done | cancelled | blocked
+Values: draft | ready | cancelled | blocked   (done is a file rename, not a value here)
 
-Status transitions:
-- draft → ready    : This plan is fleshed out enough to launch a session
-- ready → in_progress : Session has been launched
-- in_progress → done : Plan is complete — rename file to ..._done.md (don't edit this field to "done")
-- in_progress → cancelled : Plan no longer relevant (set this field to "cancelled" + reason in execution log)
-- in_progress → blocked : External dependency stops progress (set this field to "blocked" + reason in execution log)
+- draft  : not settled yet — the orchestrator won't launch it
+- ready  : "OK to launch" — only set this when it really is
+- done   : the master renames the file to ..._done.md and commits `chore(plan-<id>): mark done` (terminal)
+- cancelled : no longer relevant (set this field + reason in execution log; no rename)
+- blocked   : external dependency stops progress (set this field + reason; no rename).
+              Waiting for a deploy is NOT blocked — post-deploy checks go to the inbox `verify:` line.
+
+After done the orchestrator tracks merged → deployed → verified in _progress.md (see INSTRUCTIONS.md).
 -->
 
 ## Purpose
@@ -53,12 +55,14 @@ Things that might seem related but aren't this plan's job.
 <!--
 Objective, testable conditions that say "this plan is done."
 Use checkboxes. The session must verify each one before declaring done.
+Checks that need a deploy are not done-conditions for the master: mark them
+"→ verify (checked by the orchestrator after deploy)" and put them in the inbox `verify:` line.
 -->
 
 - [ ] ...
 - [ ] ...
 - [ ] existing test suite still green (no regression)
-- [ ] verified manner: <unit | integration | manual | NOT VERIFIED — deferred to test Wave>
+- [ ] verified manner: <unit | integration | manual | NOT VERIFIED — deferred>
 
 ## Notes / risks / open questions
 
@@ -77,15 +81,17 @@ Links to:
 - ...
 
 <!--
-Push / PR / merge policy: there is no per-plan override. The session master's
-responsibility ends at commit. Push, PR, and merge to main are always the user's
-decision. Deploy from the worktree for verification only is allowed. See INSTRUCTIONS.md.
+Landing policy: there is no per-plan override. The session master's responsibility
+ends at commit (and mark done). Push / PR are the user's call; merge to main and deploy
+are the orchestrator's steps, each with user approval. A master never deploys from its
+worktree. If the order of rollout matters (e.g. code first, config second), say so in Notes.
 -->
 
 ## Execution log
 
 <!--
-Append-only. Each entry: ISO date + what happened. Log progress line-by-line.
+Append-only. One line per checkpoint (a commit, verifying a criterion, asking the
+user, stopping): when / what / which commit. No line-by-line narration.
 Examples:
 
 2026-MM-DD started by session plan-auth-001

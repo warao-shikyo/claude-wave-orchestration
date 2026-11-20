@@ -62,7 +62,7 @@ In the plan MD's execution log:
 
 ### 5. Update status
 
-If the verdict is **done**, rename the file to `<id>-<slug>_done.md` (`git mv` + `chore(plan-<id>): mark done`). If **cancelled**, leave the filename and set the `## Status` line to `cancelled` with the reason. Either way, update `_progress.md`: status column updated, notes column includes commit hash references. Work is committed only — push / PR / merge stay with the user.
+If the verdict is **done**, rename the file to `<id>-<slug>_done.md` (`git mv` + `chore(plan-<id>): mark done`). If **cancelled**, leave the filename and set the `## Status` line to `cancelled` with the reason. Either way, put the verdict and evidence into the inbox report (the orchestrator updates `_progress.md` from it). Work is committed only — merge and deploy are the orchestrator's steps with user approval.
 
 ## Why "implicit done" beats "re-implement"
 
@@ -154,7 +154,7 @@ This pattern came up so many times that we built a starter-prompt variant specif
 "Plan {ID} ({area}-{NNN}) has been in {STATUS} for a while. Before implementing
 anything, audit whether the plan is already done. Look for: {criteria}. If done,
 record evidence + verdict in the plan MD and rename it to {ID}-{slug}_done.md.
-If not done, then implement. Commit only — push/PR/merge are the user's call.
+If not done, then implement. Commit only — merge/deploy are the orchestrator's steps.
 Either way, finish with a clear status."
 ```
 

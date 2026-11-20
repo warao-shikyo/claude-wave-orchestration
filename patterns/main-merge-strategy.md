@@ -1,20 +1,53 @@
 # Pattern: Main merge strategy
 
-After Waves, you have **dozens of orphan `plan/<id>` branches** (local — sessions commit but do not push) that need to land on `main`. Naive merging causes conflicts and chaos. This pattern offers a structured approach. Throughout, remember that **sessions only commit**: pushing, opening PRs, and merging to `main` are all user decisions, so this whole phase is human-driven.
+After Waves, you have **dozens of `plan/<id>` branches** (local — sessions commit but do not push) that need to land on `main`. Naive merging causes conflicts and chaos. This pattern offers a structured approach. Throughout, remember that **masters only commit**: merging is the orchestrator's step **with user approval** (asked once per batch, `done → merged` in the lifecycle), and push / PR are the user's.
 
-It covers two integrations: the **lightweight between-Wave integration** that runs *during* the operation (next section), and the **heavy main-merge** that runs *after* it (the rest of this doc).
+It covers the **continuous integration during the operation** (next two sections — merge as plans finish), and the **heavy main-merge** for when branches were allowed to pile up (the rest of this doc).
 
 ## Between-Wave integration (during the operation)
 
 Letting `plan/<id>` branches pile up unmerged is the **#1 anti-pattern**: each new Wave bases its worktrees off a `origin/main` that froze on Day 0, so sessions re-discover already-fixed bugs ([ANTI-PATTERNS #1](../ANTI-PATTERNS.md#1-worktrees-were-created-from-stale-originmain)).
 
-After each Wave:
+After each Wave (or as `done` plans accumulate):
 
-1. Merge the Wave's `done` branches into a single `integration/latest-known-good` branch
-2. Run the suite there — this is where Waves combine, and the natural home for [test Waves](test-waves.md)
-3. Base the next Wave's worktrees on it: `git worktree add .worktrees/<id> -b plan/<id> integration/latest-known-good`
+1. Ask the user once: "merge-ready: a-1, a-2 — merge?" and record `asked: <date>` in `_progress.md`
+2. Merge the approved `done` branches into `integration/latest-known-good` (and main)
+3. Run the suites the merged plans touch through the exclusive test wrapper; the full suite runs on its daily schedule — read its result next morning and file failures as fix plans. This is the natural home for [test Waves](test-waves.md)
+4. Base the next Wave's worktrees on it: `git worktree add .worktrees/<id> -b plan/<id> integration/latest-known-good`
+5. Confirm each landing with **both** `git merge-base --is-ancestor plan/<id> main` and the existence of the plan's artifact files
 
 Resolve the small conflicts now (~10 branches) rather than deferring them to the ~90-branch main-merge below. This integration branch *is* the "`meta-002`" we built reactively in the original engagement — just kept green from Day 1.
+
+Before building a Wave, check candidates for done-but-unmerged branches — the plan file on main keeps its pre-done name until merge:
+
+```bash
+for ID in <candidates...>; do
+  if git rev-parse --verify -q "plan/${ID}" >/dev/null; then
+    # limit to main..plan/<id>: the whole branch also contains main's old mark-done commits
+    n=$(git log --oneline main..plan/${ID} | grep -ci "mark done")
+    echo "${ID}: mark_done=${n} ahead=$(git rev-list --count main..plan/${ID})"
+  else
+    echo "${ID}: no branch = truly not started"
+  fi
+done
+```
+
+`mark_done>=1` means integration work, not Wave material.
+
+## Conflict resolution by file type
+
+`.claude/plans/` is touched by many sessions at once, so it conflicts often. Resolve by the nature of the file:
+
+| File | Resolution |
+|---|---|
+| `inbox.md` | **union** — remove only the conflict markers and keep both sides (append-only report log, both sides are true) |
+| `_progress.md` | keep main's version (single writer: the orchestrator) |
+| `STARTER.md`, plan MDs, design docs, code | **never union** — mixing breaks them (two mission briefs fused into one). Keep main's side or read and decide |
+
+- Don't write a script that unions everything; union only append-only files.
+- If anything other than a report file conflicts, don't auto-resolve — read it. If judgment is needed, send it back to the owning session. Semantic conflicts can break code without any conflict marker.
+- 🔴 **Never merge while a deploy is running.** If the deploy uploads the local working tree, a mid-deploy merge ships a half-integrated state.
+- 🔴 **When two plans bump the same shared version number** (both N→N+1), don't pick one side — that silently drops the other's change or lets a cache serve stale content. Take both changes and bump to N+2.
 
 ## The problem
 
@@ -103,7 +136,7 @@ In our engagement, hot files were:
 The `_progress.md` and `manifest.json` cases are special:
 
 - `_progress.md` — operational state, should not be merged from any branch. See [anti-patterns](../ANTI-PATTERNS.md#2-_progressmd-merge-conflicts-everywhere).
-- `manifest.json` — version field needs explicit reconciliation. Pick the highest version + integrate features.
+- `manifest.json` — version field needs explicit reconciliation. Integrate both sides' features and bump to a **new** version (not just the highest of the two).
 
 Plan for hot files **before** starting merges. For each:
 
@@ -129,7 +162,7 @@ comm -23  <(git branch --list 'plan/*' | sed 's/^[* ]*//' | sort) \
           <(git branch -r --list 'origin/plan/*' | sed 's|origin/||' | sort)
 ```
 
-Confirm every worktree is clean (all work committed to its `plan/<id>` branch) before you delete it. We almost lost work this way (`plan/auth-026` and `plan/api-026` had uncommitted changes in their worktrees at one point).
+Confirm every worktree is clean (all work committed to its `plan/<id>` branch) before you delete it. We almost lost work this way (`plan/auth-026` and `plan/api-026` had uncommitted changes in their worktrees at one point). On Windows, stop the worktree's master process first — a running session locks files and `git worktree remove` fails. `git worktree remove` keeps the branch.
 
 ## When conflicts can't be auto-resolved
 
@@ -142,6 +175,8 @@ Some files will conflict because the work was genuinely conflicting. Strategies:
 We had ~3-4 substantive conflicts that required real thought. Most were trivial line-additions in different functions.
 
 ## Deployment timing recommendations
+
+Deploys are the orchestrator's alone, from main, with user approval — never from a plan branch or worktree, never two at once, and each followed by a verify (see [METHODOLOGY §6](../METHODOLOGY.md#6-landing-model)). Batch them: with only one new `done`, wait a patrol for the next before integrating and deploying.
 
 For a project with paying customers:
 
@@ -171,7 +206,7 @@ The `main-merge` session in Wave 11 produced `docs/main_merge_plan.md` (10 chapt
 - 3 deployment events (after groups B, C, D)
 - 2-3 expected substantive conflicts
 
-This plan was **for the user to execute later** — the session didn't run the merges. This is by design: large merges to `main` should be human-driven.
+This plan was **for the user to execute later** — the session didn't run the merges. This is by design: a master never merges. Large merges are approved by the user and carried out by the orchestrator (or the user).
 
 ## Anti-patterns
 
@@ -180,6 +215,8 @@ This plan was **for the user to execute later** — the session didn't run the m
 - ❌ Skipping the hot-file analysis — surprised by `manifest.json` version war
 - ❌ Letting `_progress.md` (or other operational state) into any merge — see anti-patterns
 - ❌ All-at-once deployment — too much risk surface
+- ❌ Unioning plan MDs / STARTER.md / code to "make the conflict go away"
+- ❌ Merging into main while a deploy is running
 
 ## Tool support
 
