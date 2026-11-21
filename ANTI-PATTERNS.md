@@ -334,6 +334,12 @@ With both tactics, orchestrator context per summary drops from ~15 KB to ~500 ch
 
 **Recommendation**: post-processing stops the finished master first — only if its plan is done and its worktree has no uncommitted changes, matching the exact plan id on the command line and never touching the orchestrator or other plans — then removes the worktree (keeping the branch). Configure the terminal to close tabs on exit, or tell the user how many dead tabs to close. Also never launch a second master for a plan whose master is still running: two sessions in one worktree collide on commits.
 
+## 26. The loop ended after the user asked a question
+
+**What happened**: The orchestrator ran under `/loop` and re-armed itself with `ScheduleWakeup` at the end of each patrol. Whenever the user stepped in with a question, it answered and ended the turn — without booking the next wake. `/loop` dynamic mode only continues through that call, so the orchestrator sat idle for hours while masters finished and waited.
+
+**Recommendation**: every orchestrator turn ends with `ScheduleWakeup`, replies to the user included; stopping on purpose is written out with a fixed marker. Back the rule with a `Stop` hook that blocks once when an orchestrator session has no booked wake and no marker (see [session-monitoring](patterns/session-monitoring.md#re-arm-after-answering-the-user)).
+
 ---
 
 ## TL;DR

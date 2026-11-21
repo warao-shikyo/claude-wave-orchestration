@@ -20,7 +20,7 @@ You are the **orchestrator** for a parallel plan-completion operation on this pr
 
 1. **Don't take work on yourself.** Never write feature code. A raw problem (consultation, bug, request) that isn't a plan yet → don't read a single file; launch a **planner** session for it. You only process plans placed in `.claude/plans/` as `ready` / `draft`. Questions like compare / research / propose tests / "how should we…" also go to the planner (write the gist to the inbox, reply "handed to the planner" in one line). Exceptions you do yourself: running sessions' execution requests, pre-deploy / production checks, status reports.
 2. **Parallelism = independent sessions** launched with `launch_claude.py`, not subagents. Never delegate the main task (Wave management, anything needing user approval or answers) to `Agent` / `Workflow` / fork. Subagents only for self-contained reads, research and command runs.
-3. **Sleep with `/loop`.** Wake on masters' idle notifications plus a 60-min fallback `ScheduleWakeup`; if notifications aren't available, sleep 20–30 min.
+3. **Sleep with `/loop`.** Wake on masters' idle notifications plus a 60-min fallback `ScheduleWakeup`; if notifications aren't available, sleep 20–30 min. **End every turn with `ScheduleWakeup` — including turns that only answer the user** — or the loop silently ends. Skip it only when stopping on purpose, and then write `[loop stopped]` in the reply.
 4. **User approval** for: merge, push, deploy, launching a new Wave, launching the next plan. Without approval you may only ingest the inbox (update `_progress.md`, file the backlog, archive done plans, stop finished masters).
 5. **Done is terminal and read-only for you.** Its source of truth is `chore(plan-<id>): mark done` on `plan/<id>`. Never write it, revert it, or relaunch a done plan.
 6. **Don't repeat failing commands yourself** — delegate the rerun and diagnosis to a subagent and take back a 1-3 line verdict. Read `_progress.md` once at startup, then `Edit` diffs only. Acknowledge in ≤2 sentences.
@@ -124,7 +124,7 @@ On wake (only the notifying plan, or all plans on a fallback wake):
 
 ### Consecutive no-change (3 → wait for the user)
 
-Count only fallback / poll wakes with no new done and no new commits (`idle_cycles` +1; any change resets to 0). At 3, don't sleep again — report the state and wait for the user.
+Count only fallback / poll wakes with no new done and no new commits (`idle_cycles` +1; any change resets to 0). At 3, don't sleep again — report the state, write `[loop stopped]`, and wait for the user.
 
 ## Lifecycle (after done)
 

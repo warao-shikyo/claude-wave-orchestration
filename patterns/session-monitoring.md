@@ -22,7 +22,15 @@ Claude Code's cross-session messaging lets the orchestrator subscribe to a maste
 - **Idle ≠ done.** A master is also idle while asking a question, after a context run-out, or when blocked. The notification is a reason to look, not evidence.
 - **poll** mode (any condition missing): `ScheduleWakeup` 20 min, then 30 min.
 
-Count `idle_cycles` only on fallback / poll wakes with no change; after 3, stop sleeping and wait for the user.
+Count `idle_cycles` only on fallback / poll wakes with no change; after 3, stop sleeping and wait for the user — and say so with a fixed marker in the reply (e.g. `[loop stopped]`).
+
+### Re-arm after answering the user
+
+`/loop` dynamic mode only continues if the turn ends with a `ScheduleWakeup`. A turn that answers the user's question is easy to end with the answer alone — and then nothing ever wakes the orchestrator again. So:
+
+- **Every** orchestrator turn ends with `ScheduleWakeup`, including replies to the user (same `/loop /session-orchestrator <instructions>` prompt). Replies don't count toward `idle_cycles`.
+- Skip it only when stopping on purpose (3 idle cycles, or the user said stop), and write the marker.
+- Enforce it with a `Stop` hook, because the model will still forget in long contexts: if the session is an orchestrator, the hook input's `session_crons` is empty, `stop_hook_active` is false and the last message has no marker, print `{"decision": "block", "reason": "No ScheduleWakeup booked; re-arm it or write the marker"}`. Identify the orchestrator by an environment variable your launcher sets (e.g. `CLAUDE_BOARD_ROLE=orchestrator`), not by the working directory — planners often share the same directory. `stop_hook_active` guarantees it pushes back at most once.
 
 ## 2. Liveness from commits and the working tree (the truth)
 
